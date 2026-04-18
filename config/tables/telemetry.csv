@@ -1,0 +1,9 @@
+id,device_id,name,code,data_type,unit,writable
+pv-active-power,pv-001,Active Power,PV_P,int32,W,false
+pv-voltage,pv-001,Voltage,PV_U,uint16,V,false
+pv-current,pv-001,Current,PV_I,int16,A,false
+bess-soc,bess-001,SOC,BESS_SOC,uint16,%,false
+bess-active-power,bess-001,Active Power,BESS_P,int32,W,false
+grid-active-power,grid-001,Grid Active Power,GRID_P,float32,kW,false
+grid-frequency,grid-001,Grid Frequency,GRID_FREQ,float32,Hz,false
+grid-voltage,grid-001,Grid Voltage,GRID_U,float32,V,false

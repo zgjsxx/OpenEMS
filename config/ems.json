@@ -1,0 +1,263 @@
+{
+  "log_level": "info",
+  "default_poll_interval_ms": 1000,
+  "site": {
+    "id": "site-demo-001",
+    "name": "Demo Site",
+    "description": "OpenEMS demonstration site",
+    "devices": [
+      {
+        "id": "pv-001",
+        "name": "PV Inverter #1",
+        "type": "PV",
+        "protocol": "modbus-tcp",
+        "ip": "127.0.0.1",
+        "port": 5020,
+        "unit_id": 1,
+        "poll_interval_ms": 1000,
+        "points": [
+          {
+            "id": "pv-active-power",
+            "name": "Active Power",
+            "code": "PV_P",
+            "category": "telemetry",
+            "data_type": "int32",
+            "unit": "W",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 0,
+              "register_count": 2,
+              "data_type": "int32",
+              "scale": 1.0,
+              "offset": 0.0
+            }
+          },
+          {
+            "id": "pv-voltage",
+            "name": "Voltage",
+            "code": "PV_U",
+            "category": "telemetry",
+            "data_type": "uint16",
+            "unit": "V",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 2,
+              "register_count": 1,
+              "data_type": "uint16",
+              "scale": 0.1,
+              "offset": 0.0
+            }
+          },
+          {
+            "id": "pv-current",
+            "name": "Current",
+            "code": "PV_I",
+            "category": "telemetry",
+            "data_type": "int16",
+            "unit": "A",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 3,
+              "register_count": 1,
+              "data_type": "int16",
+              "scale": 0.01,
+              "offset": 0.0
+            }
+          },
+          {
+            "id": "pv-running-status",
+            "name": "Running Status",
+            "code": "PV_RUN",
+            "category": "teleindication",
+            "data_type": "uint16",
+            "unit": "",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 10,
+              "register_count": 1,
+              "data_type": "uint16",
+              "scale": 1.0,
+              "offset": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": "bess-001",
+        "name": "BESS #1",
+        "type": "BESS",
+        "protocol": "modbus-tcp",
+        "ip": "127.0.0.1",
+        "port": 5021,
+        "unit_id": 1,
+        "poll_interval_ms": 500,
+        "points": [
+          {
+            "id": "bess-soc",
+            "name": "SOC",
+            "code": "BESS_SOC",
+            "category": "telemetry",
+            "data_type": "uint16",
+            "unit": "%",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 0,
+              "register_count": 1,
+              "data_type": "uint16",
+              "scale": 0.1,
+              "offset": 0.0
+            }
+          },
+          {
+            "id": "bess-active-power",
+            "name": "Active Power",
+            "code": "BESS_P",
+            "category": "telemetry",
+            "data_type": "int32",
+            "unit": "W",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 1,
+              "register_count": 2,
+              "data_type": "int32",
+              "scale": 1.0,
+              "offset": 0.0
+            }
+          },
+          {
+            "id": "bess-grid-state",
+            "name": "Grid State",
+            "code": "BESS_GRID",
+            "category": "teleindication",
+            "data_type": "uint16",
+            "unit": "",
+            "writable": false,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 5,
+              "register_count": 1,
+              "data_type": "uint16",
+              "scale": 1.0,
+              "offset": 0.0
+            }
+          },
+          {
+            "id": "bess-run-mode",
+            "name": "Run Mode",
+            "code": "BESS_MODE",
+            "category": "teleindication",
+            "data_type": "uint16",
+            "unit": "",
+            "writable": true,
+            "modbus": {
+              "function_code": 3,
+              "register_address": 6,
+              "register_count": 1,
+              "data_type": "uint16",
+              "scale": 1.0,
+              "offset": 0.0
+            }
+          }
+        ]
+      },
+      {
+        "id": "grid-001",
+        "name": "Grid Relay #1",
+        "type": "Grid",
+        "protocol": "iec104",
+        "ip": "192.168.1.100",
+        "port": 2404,
+        "common_address": 1,
+        "poll_interval_ms": 1000,
+        "points": [
+          {
+            "id": "grid-on-off-status",
+            "name": "On/Off Grid Status",
+            "code": "GRID_STATE",
+            "category": "teleindication",
+            "data_type": "uint16",
+            "unit": "",
+            "writable": false,
+            "iec104": {
+              "type_id": 3,
+              "ioa": 1,
+              "common_address": 1,
+              "scale": 1.0,
+              "cot": 3
+            }
+          },
+          {
+            "id": "grid-active-power",
+            "name": "Grid Active Power",
+            "code": "GRID_P",
+            "category": "telemetry",
+            "data_type": "float32",
+            "unit": "kW",
+            "writable": false,
+            "iec104": {
+              "type_id": 13,
+              "ioa": 100,
+              "common_address": 1,
+              "scale": 1.0,
+              "cot": 1
+            }
+          },
+          {
+            "id": "grid-frequency",
+            "name": "Grid Frequency",
+            "code": "GRID_FREQ",
+            "category": "telemetry",
+            "data_type": "float32",
+            "unit": "Hz",
+            "writable": false,
+            "iec104": {
+              "type_id": 13,
+              "ioa": 101,
+              "common_address": 1,
+              "scale": 1.0,
+              "cot": 1
+            }
+          },
+          {
+            "id": "grid-voltage",
+            "name": "Grid Voltage",
+            "code": "GRID_U",
+            "category": "telemetry",
+            "data_type": "float32",
+            "unit": "V",
+            "writable": false,
+            "iec104": {
+              "type_id": 13,
+              "ioa": 102,
+              "common_address": 1,
+              "scale": 0.1,
+              "cot": 1
+            }
+          },
+          {
+            "id": "grid-switch-position",
+            "name": "Switch Position",
+            "code": "GRID_SW",
+            "category": "teleindication",
+            "data_type": "uint16",
+            "unit": "",
+            "writable": false,
+            "iec104": {
+              "type_id": 1,
+              "ioa": 10,
+              "common_address": 1,
+              "scale": 1.0,
+              "cot": 3
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
