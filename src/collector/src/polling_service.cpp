@@ -150,9 +150,18 @@ common::VoidResult DevicePollTask::poll_once() {
       all_ok = false;
       OPENEMS_LOG_W("PollTask",
           "Poll group failed for device " + device_->id() +
+          " (" + client_->config().ip + ":" + std::to_string(client_->config().port) + ")" +
           " FC=" + std::to_string(group.function_code) +
           " addr=" + std::to_string(group.start_address) +
           ": " + result.error_msg());
+      // Only mark the points in this failed group as Bad, not all device points
+      for (auto& pt : group.points) {
+        if (pt->category() == common::PointCategory::Teleindication) {
+          rtdb_->write_teleindication(pt->id(), 0, common::Quality::Bad, false);
+        } else {
+          rtdb_->write_telemetry(pt->id(), 0.0, common::Quality::Bad, false);
+        }
+      }
     }
   }
 
@@ -163,13 +172,6 @@ common::VoidResult DevicePollTask::poll_once() {
   } else {
     stats_.fail_count++;
     device_->set_status(common::DeviceStatus::Offline);
-    for (auto& pt : device_->points()) {
-      if (pt->category() == common::PointCategory::Teleindication) {
-        rtdb_->write_teleindication(pt->id(), 0, common::Quality::Bad, false);
-      } else {
-        rtdb_->write_telemetry(pt->id(), 0.0, common::Quality::Bad, false);
-      }
-    }
   }
 
   return all_ok ? common::VoidResult::Ok()
@@ -184,15 +186,23 @@ PollingService::~PollingService() { stop(); }
 bool PollingService::start() {
   if (running_.load()) return true;
   running_ = true;
-  poll_thread_ = std::thread(&PollingService::poll_thread_func, this);
-  OPENEMS_LOG_I("PollingService", "Started polling service");
+
+  std::lock_guard lock(tasks_mutex_);
+  for (auto& task : tasks_) {
+    poll_threads_.emplace_back(&PollingService::device_poll_thread, this, task);
+  }
+  OPENEMS_LOG_I("PollingService", "Started polling service with " +
+      std::to_string(poll_threads_.size()) + " device threads");
   return true;
 }
 
 bool PollingService::stop() {
   if (!running_.load()) return true;
   running_ = false;
-  if (poll_thread_.joinable()) poll_thread_.join();
+  for (auto& t : poll_threads_) {
+    if (t.joinable()) t.join();
+  }
+  poll_threads_.clear();
   OPENEMS_LOG_I("PollingService", "Stopped polling service");
   return true;
 }
@@ -214,20 +224,24 @@ void PollingService::set_default_interval(uint32_t interval_ms) {
   default_interval_ms_ = interval_ms;
 }
 
-void PollingService::poll_thread_func() {
-  OPENEMS_LOG_I("PollingService", "Poll thread started");
+void PollingService::device_poll_thread(DevicePollTaskPtr task) {
+  OPENEMS_LOG_I("PollingService", "Poll thread started for device " + task->device()->id());
   while (running_.load()) {
-    std::lock_guard lock(tasks_mutex_);
-    for (auto& task : tasks_) {
-      auto result = task->poll_once();
-      if (!result.is_ok()) {
-        OPENEMS_LOG_D("PollingService",
-            "Poll failed for " + task->device()->id() + ": " + result.error_msg());
-      }
+    auto start = std::chrono::steady_clock::now();
+    auto result = task->poll_once();
+    if (!result.is_ok()) {
+      OPENEMS_LOG_D("PollingService",
+          "Poll failed for " + task->device()->id() + ": " + result.error_msg());
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(default_interval_ms_));
+    // Sleep only the remaining time to hit the target interval
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    auto sleep_ms = static_cast<long>(default_interval_ms_) - elapsed;
+    if (sleep_ms > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+    }
   }
-  OPENEMS_LOG_I("PollingService", "Poll thread exiting");
+  OPENEMS_LOG_I("PollingService", "Poll thread exiting for device " + task->device()->id());
 }
 
 } // namespace openems::collector

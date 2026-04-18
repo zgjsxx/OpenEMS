@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Dashboard</title>
+<style>
+  :root {
+    --bg: #1a1d23;
+    --card-bg: #22262e;
+    --border: #3a3f4a;
+    --text: #e0e4eb;
+    --text-muted: #8a8f9a;
+    --accent: #4fc3f7;
+    --good: #4caf50;
+    --questionable: #ff9800;
+    --bad: #f44336;
+    --invalid: #9e9e9e;
+    --header-bg: #0d1117;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh;
+  }
+  /* Header */
+  .site-header {
+    background: var(--header-bg);
+    border-bottom: 2px solid var(--accent);
+    padding: 16px 24px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .site-header h1 {
+    font-size: 22px; font-weight: 600; color: var(--accent);
+  }
+  .site-header .site-info {
+    font-size: 14px; color: var(--text-muted);
+  }
+  .site-header .site-info span { margin-left: 12px; }
+  /* Status bar */
+  .status-bar {
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 24px;
+    display: flex; align-items: center; gap: 20px;
+    font-size: 13px; color: var(--text-muted);
+  }
+  .status-bar .conn-dot {
+    width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+  }
+  .conn-dot.ok { background: var(--good); }
+  .conn-dot.err { background: var(--bad); }
+  .conn-dot.wait { background: var(--questionable); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  /* Main grid */
+  .main-grid {
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    gap: 16px;
+  }
+  /* Device card */
+  .device-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .device-card-header {
+    background: #2c3040;
+    padding: 12px 16px;
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .device-card-header .device-icon {
+    font-size: 20px;
+  }
+  .device-card-header .device-name {
+    font-size: 16px; font-weight: 600;
+  }
+  .device-card-header .device-id {
+    font-size: 12px; color: var(--text-muted); margin-left: auto;
+  }
+  .device-card-body { padding: 12px 16px; }
+  /* Point row */
+  .point-row {
+    display: flex; align-items: center; padding: 6px 0;
+    border-bottom: 1px solid #2a2e36;
+  }
+  .point-row:last-child { border-bottom: none; }
+  .point-label {
+    font-size: 13px; color: var(--text-muted); min-width: 140px;
+  }
+  .point-value {
+    font-size: 15px; font-weight: 600; min-width: 100px; text-align: right;
+  }
+  .point-unit {
+    font-size: 12px; color: var(--text-muted); margin-left: 4px; min-width: 30px;
+  }
+  .point-quality {
+    margin-left: auto; font-size: 11px;
+    padding: 2px 8px; border-radius: 4px; font-weight: 600;
+  }
+  .quality-Good { background: rgba(76,175,80,0.2); color: var(--good); }
+  .quality-Questionable { background: rgba(255,152,0,0.2); color: var(--questionable); }
+  .quality-Bad { background: rgba(244,67,54,0.2); color: var(--bad); }
+  .quality-Invalid { background: rgba(158,158,158,0.2); color: var(--invalid); }
+  /* Invalid/offline value */
+  .value-invalid { color: var(--text-muted); text-decoration: line-through; }
+  .value-valid { color: var(--text); }
+  /* Teleindication state */
+  .ti-state {
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .ti-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .ti-dot.on { background: var(--good); }
+  .ti-dot.off { background: var(--bad); }
+  .ti-dot.unknown { background: var(--invalid); }
+  .ti-code { font-size: 14px; font-weight: 600; }
+  /* Timestamp */
+  .point-ts {
+    font-size: 11px; color: var(--text-muted); margin-left: 8px;
+  }
+  /* Error overlay */
+  .error-overlay {
+    position: fixed; top: 80px; left: 50%; transform: translateX(-50%);
+    background: rgba(244,67,54,0.9); color: #fff;
+    padding: 12px 24px; border-radius: 8px; font-size: 14px;
+    z-index: 100; display: none;
+  }
+  /* No data message */
+  .no-data {
+    text-align: center; padding: 60px 20px; color: var(--text-muted);
+  }
+  .no-data h2 { font-size: 18px; margin-bottom: 8px; }
+  .no-data p { font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div class="site-header">
+  <h1 id="site-title">OpenEMS</h1>
+  <div class="site-info">
+    <span id="site-id"></span>
+    <span id="site-name"></span>
+  </div>
+</div>
+
+<div class="status-bar">
+  <span class="conn-dot wait" id="conn-dot"></span>
+  <span id="conn-text">Connecting...</span>
+  <span>|</span>
+  <span>Seq: <strong id="seq-num">-</strong></span>
+  <span>|</span>
+  <span>Last update: <strong id="last-update">-</strong></span>
+</div>
+
+<div class="error-overlay" id="error-overlay"></div>
+
+<div class="main-grid" id="main-grid">
+  <div class="no-data" id="no-data">
+    <h2>Waiting for data...</h2>
+    <p>Make sure openems-modbus-collector is running</p>
+  </div>
+</div>
+
+<script>
+const REFRESH_MS = 1000;
+const DEVICE_TYPE_ICONS = { PV: "☀", BESS: "🔋", Grid: "⚡" };
+
+function qualityClass(q) { return "quality-" + (q || "Invalid"); }
+function tiStateDot(code) {
+  if (code === 1) return "on";
+  if (code === 0) return "off";
+  return "unknown";
+}
+
+function buildCards(points) {
+  // Group points by device
+  const devices = {};
+  for (const p of points) {
+    if (!devices[p.device]) devices[p.device] = [];
+    devices[p.device].push(p);
+  }
+
+  const grid = document.getElementById("main-grid");
+
+  if (Object.keys(devices).length === 0) {
+    grid.innerHTML = '<div class="no-data"><h2>Waiting for data...</h2><p>Make sure openems-modbus-collector is running</p></div>';
+    return;
+  }
+
+  // Build all cards every time — simple and reliable
+  let cardsHtml = "";
+  const devKeys = Object.keys(devices).sort();
+
+  for (const did of devKeys) {
+    let type = did.split("-")[0].toUpperCase();
+    let icon = DEVICE_TYPE_ICONS[type] || "📋";
+    let bodyHtml = "";
+
+    for (const p of devices[did]) {
+      if (p.category === "telemetry") {
+        const valClass = p.valid ? "value-valid" : "value-invalid";
+        const v = p.valid ? formatValue(p.value) : "---";
+        bodyHtml += `<div class="point-row">
+          <span class="point-label">${p.id}</span>
+          <span class="point-value ${valClass}">${v}</span>
+          <span class="point-unit">${p.unit || ""}</span>
+          <span class="point-quality ${qualityClass(p.quality)}">${p.quality}</span>
+          <span class="point-ts">${p.timestamp_str || ""}</span>
+        </div>`;
+      } else {
+        const dotClass = p.valid ? tiStateDot(p.state_code) : "unknown";
+        const label = p.valid ? (p.state_code === 1 ? "Running" : "Stopped") : "---";
+        bodyHtml += `<div class="point-row">
+          <span class="point-label">${p.id}</span>
+          <span class="ti-state">
+            <span class="ti-dot ${dotClass}"></span>
+            <span class="ti-code ${p.valid ? 'value-valid' : 'value-invalid'}">${p.state_code} (${label})</span>
+          </span>
+          <span class="point-quality ${qualityClass(p.quality)}">${p.quality}</span>
+          <span class="point-ts">${p.timestamp_str || ""}</span>
+        </div>`;
+      }
+    }
+
+    cardsHtml += `<div class="device-card">
+      <div class="device-card-header">
+        <span class="device-icon">${icon}</span>
+        <span class="device-name" data-did="${did}">${did}</span>
+        <span class="device-id">${did}</span>
+      </div>
+      <div class="device-card-body">${bodyHtml}</div>
+    </div>`;
+  }
+
+  grid.innerHTML = cardsHtml;
+
+  // Update device names from loaded config
+  if (deviceNames) {
+    for (const did of devKeys) {
+      const el = grid.querySelector(`[data-did="${did}"]`);
+      if (el && deviceNames[did]) el.textContent = deviceNames[did];
+    }
+  }
+}
+
+function formatValue(v) {
+  if (typeof v !== "number") return "---";
+  if (Math.abs(v) >= 1000) return v.toFixed(1);
+  if (Math.abs(v) >= 1) return v.toFixed(2);
+  if (Math.abs(v) >= 0.01) return v.toFixed(3);
+  return v.toFixed(4);
+}
+
+async function refresh() {
+  const dot = document.getElementById("conn-dot");
+  const text = document.getElementById("conn-text");
+  const overlay = document.getElementById("error-overlay");
+
+  try {
+    const resp = await fetch("/api/snapshot");
+    if (!resp.ok) {
+      // Server returned error status (e.g. 503 when collector not running)
+      let msg = "Server error";
+      try { const d = await resp.json(); msg = d.error || msg; } catch(_) {}
+      dot.className = "conn-dot wait";
+      text.textContent = "Waiting for collector";
+      overlay.textContent = msg;
+      overlay.style.display = "block";
+      return;
+    }
+    const data = await resp.json();
+
+    if (data.error) {
+      dot.className = "conn-dot wait";
+      text.textContent = "Waiting for collector";
+      overlay.textContent = data.error;
+      overlay.style.display = "block";
+      return;
+    }
+
+    overlay.style.display = "none";
+    dot.className = "conn-dot ok";
+    text.textContent = "Connected";
+
+    document.getElementById("site-title").textContent = "OpenEMS Dashboard";
+    document.getElementById("site-id").textContent = data.site_id || "";
+    document.getElementById("site-name").textContent = data.site_name || "";
+    document.getElementById("seq-num").textContent = data.update_seq || "-";
+    document.getElementById("last-update").textContent = data.last_update_str || "-";
+
+    if (data.points && data.points.length > 0) {
+      buildCards(data.points);
+    }
+
+  } catch (e) {
+    dot.className = "conn-dot err";
+    text.textContent = "Connection failed";
+    overlay.textContent = "Cannot reach server: " + e.message;
+    overlay.style.display = "block";
+  }
+}
+
+// Load device names from config
+let deviceNames = {};
+async function loadConfig() {
+  try {
+    const resp = await fetch("/api/config");
+    if (!resp.ok) return;
+    const cfg = await resp.json();
+    if (cfg.devices) {
+      for (const d of cfg.devices) {
+        deviceNames[d.id] = d.name || d.id;
+      }
+    }
+  } catch (_) {}
+}
+
+// Start polling
+refresh();
+loadConfig();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

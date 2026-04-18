@@ -22,7 +22,10 @@ static void signal_handler(int) { g_running = false; }
 
 static openems::model::SitePtr build_site(const openems::config::EmsConfig& cfg) {
   auto site = openems::model::SiteCreate(cfg.site.id, cfg.site.name, cfg.site.description);
+  // Only process Modbus-TCP devices
   for (auto& dc : cfg.site.devices) {
+    if (dc.protocol != "modbus-tcp") continue;
+
     auto device = openems::model::DeviceCreate(
         dc.id, dc.name, dc.type, dc.ip, dc.port, dc.unit_id, dc.poll_interval_ms);
     for (auto& pc : dc.points) {
@@ -47,6 +50,7 @@ static uint32_t count_category(const openems::config::EmsConfig& cfg,
 
 static void register_points(openems::rt_db::RtDb* db, const openems::config::EmsConfig& cfg) {
   for (auto& dc : cfg.site.devices) {
+    if (dc.protocol != "modbus-tcp") continue;
     for (auto& pc : dc.points) {
       uint8_t category = 0;
       if (pc.category == openems::common::PointCategory::Teleindication) category = 1;
@@ -59,7 +63,7 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  std::string config_path = "config/ems.json";
+  std::string config_path = "config/tables";
   if (argc > 1) config_path = argv[1];
 
   OPENEMS_LOG_I("Collector", "Loading config: " + config_path);
@@ -75,10 +79,15 @@ int main(int argc, char* argv[]) {
 
   // Create shared memory
   std::string shm_name = "Global\\openems_rt_db";
-  uint32_t ti_count = count_category(cfg, openems::common::PointCategory::Teleindication);
+  uint32_t ti_count = 0;
   uint32_t telem_count = 0;
-  for (auto& dc : cfg.site.devices) for (auto& pc : dc.points)
-    if (pc.category != openems::common::PointCategory::Teleindication) telem_count++;
+  for (auto& dc : cfg.site.devices) {
+    if (dc.protocol != "modbus-tcp") continue;
+    for (auto& pc : dc.points) {
+      if (pc.category == openems::common::PointCategory::Teleindication) ti_count++;
+      else telem_count++;
+    }
+  }
 
   auto rtdb_result = openems::rt_db::RtDb::create(shm_name, telem_count, ti_count);
   if (!rtdb_result.is_ok()) {

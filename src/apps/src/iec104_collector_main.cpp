@@ -78,7 +78,7 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  std::string config_path = "config/ems.json";
+  std::string config_path = "config/tables";
   if (argc > 1) config_path = argv[1];
 
   OPENEMS_LOG_I("IEC104Collector", "Loading config: " + config_path);

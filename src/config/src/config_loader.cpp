@@ -2,13 +2,8 @@
 #include "openems/config/config_loader.h"
 #include "openems/config/csv_parser.h"
 #include "openems/utils/logger.h"
-#include <fstream>
-#include <sstream>
-#include <nlohmann/json.hpp>
 
 namespace openems::config {
-
-using json = nlohmann::json;
 
 static common::PointCategory parse_point_category(const std::string& s) {
   if (s == "telemetry")      return common::PointCategory::Telemetry;
@@ -41,91 +36,7 @@ static common::DeviceType parse_device_type(const std::string& s) {
   return common::DeviceType::Unknown;
 }
 
-common::Result<EmsConfig> ConfigLoader::load_from_json(const std::string& path) {
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    return common::Result<EmsConfig>::Err(
-        common::ErrorCode::InvalidConfig, "Cannot open: " + path);
-  }
-
-  try {
-    json j;
-    file >> j;
-
-    EmsConfig config;
-    config.log_level = j.value("log_level", "info");
-    config.default_poll_interval_ms = j.value("default_poll_interval_ms", 1000);
-
-    auto& site_j = j["site"];
-    config.site.id = site_j.value("id", "site-001");
-    config.site.name = site_j.value("name", "Default Site");
-    config.site.description = site_j.value("description", "");
-
-    for (auto& dev_j : site_j["devices"]) {
-      DeviceConfig dc;
-      dc.id = dev_j.value("id", "dev-001");
-      dc.name = dev_j.value("name", "Device");
-      dc.type = parse_device_type(dev_j.value("type", "Unknown"));
-      dc.ip = dev_j.value("ip", "127.0.0.1");
-      dc.port = dev_j.value("port", 502);
-      dc.unit_id = dev_j.value("unit_id", 1);
-      dc.poll_interval_ms = dev_j.value("poll_interval_ms", 1000);
-      dc.protocol = dev_j.value("protocol", "modbus-tcp");
-      dc.iec104_common_address = dev_j.value("common_address", 1);
-
-      for (auto& pt_j : dev_j["points"]) {
-        PointConfig pc;
-        pc.id = pt_j.value("id", "pt-001");
-        pc.name = pt_j.value("name", "Point");
-        pc.code = pt_j.value("code", "");
-        pc.category = parse_point_category(pt_j.value("category", "telemetry"));
-        pc.data_type = parse_data_type(pt_j.value("data_type", "uint16"));
-        pc.unit = pt_j.value("unit", "");
-        pc.writable = pt_j.value("writable", false);
-
-        if (pt_j.contains("modbus")) {
-          pc.has_modbus_mapping = true;
-          auto& mb = pt_j["modbus"];
-          pc.modbus_mapping.function_code = mb.value("function_code", 3);
-          pc.modbus_mapping.register_address = mb.value("register_address", 0);
-          pc.modbus_mapping.register_count = mb.value("register_count", 1);
-          pc.modbus_mapping.data_type = parse_data_type(mb.value("data_type", "uint16"));
-          pc.modbus_mapping.scale = mb.value("scale", 1.0);
-          pc.modbus_mapping.offset = mb.value("offset", 0.0);
-          pc.modbus_mapping.byte_swap = mb.value("byte_swap", false);
-          pc.modbus_mapping.word_swap = mb.value("word_swap", false);
-        }
-
-        if (pt_j.contains("iec104")) {
-          pc.has_iec104_mapping = true;
-          auto& ic = pt_j["iec104"];
-          pc.iec104_mapping.type_id = ic.value("type_id", 13);
-          pc.iec104_mapping.ioa = ic.value("ioa", 0);
-          pc.iec104_mapping.common_address = ic.value("common_address", 1);
-          pc.iec104_mapping.scale = ic.value("scale", 1.0);
-          pc.iec104_mapping.cot = ic.value("cot", 3);
-        }
-
-        dc.points.push_back(std::move(pc));
-      }
-
-      config.site.devices.push_back(std::move(dc));
-    }
-
-    return common::Result<EmsConfig>::Ok(std::move(config));
-  } catch (const std::exception& e) {
-    return common::Result<EmsConfig>::Err(
-        common::ErrorCode::ParseError, "JSON parse error: " + std::string(e.what()));
-  }
-}
-
-common::Result<EmsConfig> ConfigLoader::load_from_yaml(const std::string& path) {
-  return common::Result<EmsConfig>::Err(
-      common::ErrorCode::NotSupported, "YAML not yet implemented");
-}
-
-common::Result<EmsConfig> ConfigLoader::load_from_csv_dir(const std::string& dir_path) {
-  // Helper to build full file path
+common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
   auto csv_path = [&](const std::string& filename) {
     std::string p = dir_path;
     if (!p.empty() && p.back() != '/' && p.back() != '\\') p += '/';
@@ -167,7 +78,6 @@ common::Result<EmsConfig> ConfigLoader::load_from_csv_dir(const std::string& dir
   auto& device_table = device_result.value();
 
   auto d_id_idx = device_table.col_index("id");
-  auto d_site_idx = device_table.col_index("site_id");
   auto d_name_idx = device_table.col_index("name");
   auto d_type_idx = device_table.col_index("type");
   auto d_proto_idx = device_table.col_index("protocol");
@@ -193,14 +103,12 @@ common::Result<EmsConfig> ConfigLoader::load_from_csv_dir(const std::string& dir
   }
 
   // 4. Read telemetry.csv and teleindication.csv
-  // Helper: load a point table with a fixed category
   auto load_point_table = [&](const std::string& filename, common::PointCategory cat) -> common::Result<CsvTable> {
     auto result = parse_csv_file(csv_path(filename));
     if (!result.is_ok()) return result;
     auto& table = result.value();
 
     auto p_id_idx = table.col_index("id");
-    auto p_dev_idx = table.col_index("device_id");
     auto p_name_idx = table.col_index("name");
     auto p_code_idx = table.col_index("code");
     auto p_dt_idx = table.col_index("data_type");
@@ -285,13 +193,6 @@ common::Result<EmsConfig> ConfigLoader::load_from_csv_dir(const std::string& dir
   }
 
   return common::Result<EmsConfig>::Ok(std::move(config));
-}
-
-common::Result<EmsConfig> ConfigLoader::load(const std::string& path) {
-  if (path.size() >= 5 && path.substr(path.size() - 5) == ".json") return load_from_json(path);
-  if (path.size() >= 5 && path.substr(path.size() - 5) == ".yaml" ||
-      path.size() >= 4 && path.substr(path.size() - 4) == ".yml") return load_from_yaml(path);
-  return load_from_csv_dir(path);
 }
 
 } // namespace openems::config

@@ -43,6 +43,7 @@ public:
   common::VoidResult connect();
   void disconnect();
   bool is_connected() const;
+  const ModbusConfig& config() const { return config_; }
 
   // 断线重连
   common::VoidResult reconnect();

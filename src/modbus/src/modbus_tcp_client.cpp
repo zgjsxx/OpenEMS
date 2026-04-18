@@ -12,10 +12,12 @@
   #define SOCKET_INVALID INVALID_SOCKET
 #else
   #include <sys/socket.h>
+  #include <sys/select.h>
   #include <netinet/in.h>
   #include <arpa/inet.h>
   #include <unistd.h>
   #include <fcntl.h>
+  #include <errno.h>
   using SocketType = int;
   #define CLOSE_SOCKET close
   #define SOCKET_INVALID (-1)
@@ -155,17 +157,14 @@ common::VoidResult ModbusTcpClient::do_connect() {
         common::ErrorCode::ModbusConnectionFailed, "socket() failed");
   }
 
-  // 设置超时
+  // Use non-blocking connect with timeout to avoid Windows default ~21s SYN timeout
 #ifdef _WIN32
-  DWORD tv = static_cast<DWORD>(config_.timeout_ms);
-  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
-  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+  // Set socket to non-blocking for connect
+  u_long mode = 1;
+  ioctlsocket(fd, FIONBIO, &mode);
 #else
-  struct timeval tv;
-  tv.tv_sec = config_.timeout_ms / 1000;
-  tv.tv_usec = (config_.timeout_ms % 1000) * 1000;
-  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 #endif
 
   struct sockaddr_in addr;
@@ -174,12 +173,72 @@ common::VoidResult ModbusTcpClient::do_connect() {
   addr.sin_port = htons(config_.port);
   inet_pton(AF_INET, config_.ip.c_str(), &addr.sin_addr);
 
-  if (::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-    CLOSE_SOCKET(fd);
-    return common::VoidResult::Err(
-        common::ErrorCode::ModbusConnectionFailed,
-        "connect() to " + config_.ip + ":" + std::to_string(config_.port) + " failed");
+  int ret = ::connect(fd, (struct sockaddr*)&addr, sizeof(addr));
+  if (ret != 0) {
+#ifdef _WIN32
+    int err = WSAGetLastError();
+    bool in_progress = (err == WSAEWOULDBLOCK);
+#else
+    int err = errno;
+    bool in_progress = (err == EINPROGRESS);
+#endif
+
+    if (!in_progress) {
+      CLOSE_SOCKET(fd);
+      return common::VoidResult::Err(
+          common::ErrorCode::ModbusConnectionFailed,
+          "connect() to " + config_.ip + ":" + std::to_string(config_.port) + " failed");
+    }
+
+    // Wait for connection with timeout using select
+    fd_set write_fds;
+    FD_ZERO(&write_fds);
+    FD_SET(fd, &write_fds);
+
+    struct timeval tv;
+    tv.tv_sec = config_.timeout_ms / 1000;
+    tv.tv_usec = (config_.timeout_ms % 1000) * 1000;
+
+    ret = select(static_cast<int>(fd) + 1, nullptr, &write_fds, nullptr, &tv);
+    if (ret <= 0) {
+      CLOSE_SOCKET(fd);
+      return common::VoidResult::Err(
+          common::ErrorCode::ModbusConnectionFailed,
+          "connect() timeout to " + config_.ip + ":" + std::to_string(config_.port));
+    }
+
+    // Check if connect actually succeeded
+    int sock_err = 0;
+    socklen_t len = sizeof(sock_err);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sock_err), &len);
+    if (sock_err != 0) {
+      CLOSE_SOCKET(fd);
+      return common::VoidResult::Err(
+          common::ErrorCode::ModbusConnectionFailed,
+          "connect() to " + config_.ip + ":" + std::to_string(config_.port) + " failed after select");
+    }
   }
+
+  // Restore to blocking mode for normal I/O
+#ifdef _WIN32
+  mode = 0;
+  ioctlsocket(fd, FIONBIO, &mode);
+#else
+  fcntl(fd, F_SETFL, flags);
+#endif
+
+  // Set I/O timeouts
+#ifdef _WIN32
+  DWORD tv_ms = static_cast<DWORD>(config_.timeout_ms);
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_ms, sizeof(tv_ms));
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_ms, sizeof(tv_ms));
+#else
+  struct timeval tv_io;
+  tv_io.tv_sec = config_.timeout_ms / 1000;
+  tv_io.tv_usec = (config_.timeout_ms % 1000) * 1000;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv_io, sizeof(tv_io));
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv_io, sizeof(tv_io));
+#endif
 
   {
     std::lock_guard lock(socket_mutex_);
@@ -205,7 +264,7 @@ void ModbusTcpClient::disconnect() {
     socket_fd_ = -1;
   }
   connected_ = false;
-  OPENEMS_LOG_I("ModbusTcpClient", "Disconnected from " + config_.ip);
+  OPENEMS_LOG_I("ModbusTcpClient", "Disconnected from " + config_.ip + ":" + std::to_string(config_.port));
   if (conn_cb_) conn_cb_(false, config_.ip, config_.port);
 }
 
@@ -219,7 +278,7 @@ common::VoidResult ModbusTcpClient::reconnect() {
     OPENEMS_LOG_W("ModbusTcpClient",
         "Reconnect attempt " + std::to_string(i + 1) +
         "/" + std::to_string(config_.max_reconnect_attempts) +
-        " to " + config_.ip);
+        " to " + config_.ip + ":" + std::to_string(config_.port));
     auto result = do_connect();
     if (result.is_ok()) return result;
     std::this_thread::sleep_for(

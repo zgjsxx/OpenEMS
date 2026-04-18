@@ -78,11 +78,11 @@ public:
   void set_default_interval(uint32_t interval_ms);
 
 private:
-  void poll_thread_func();
+  void device_poll_thread(DevicePollTaskPtr task);
 
   std::vector<DevicePollTaskPtr> tasks_;
   std::atomic<bool> running_{false};
-  std::thread poll_thread_;
+  std::vector<std::thread> poll_threads_;
   mutable std::mutex tasks_mutex_;
   uint32_t default_interval_ms_ = 1000;
 };

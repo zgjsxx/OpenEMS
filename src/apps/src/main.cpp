@@ -29,6 +29,7 @@ static openems::model::SitePtr build_site_from_config(const openems::config::Ems
       cfg.site.id, cfg.site.name, cfg.site.description);
 
   for (auto& dc : cfg.site.devices) {
+    if (dc.protocol != "modbus-tcp") continue;
     auto device = openems::model::DeviceCreate(
         dc.id, dc.name, dc.type, dc.ip, dc.port,
         dc.unit_id, dc.poll_interval_ms);
@@ -138,7 +139,7 @@ int main(int argc, char* argv[]) {
   std::signal(SIGTERM, signal_handler);
 
   // 1. Load config
-  std::string config_path = "config/ems.json";
+  std::string config_path = "config/tables";
   if (argc > 1) config_path = argv[1];
 
   OPENEMS_LOG_I("Main", "Loading config from: " + config_path);
