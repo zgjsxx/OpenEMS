@@ -25,6 +25,10 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--bg); color: var(--text);
     min-height: 100vh;
+    overflow-x: auto;
+  }
+  .layout-shell {
+    min-width: 1360px;
   }
   /* Header */
   .site-header {
@@ -59,8 +63,10 @@
   .main-grid {
     padding: 20px 24px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    grid-template-columns: 1fr;
     gap: 16px;
+    align-items: start;
+    justify-items: start;
   }
   /* Device card */
   .device-card {
@@ -68,6 +74,8 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
+    max-width: 760px;
+    width: 100%;
   }
   .device-card-header {
     background: #2c3040;
@@ -84,24 +92,35 @@
   .device-card-header .device-id {
     font-size: 12px; color: var(--text-muted); margin-left: auto;
   }
-  .device-card-body { padding: 12px 16px; }
+  .device-card-body {
+    padding: 12px 16px;
+    --row-template: 200px 78px 20px 92px 52px 48px 48px 176px;
+  }
   /* Point row */
   .point-row {
-    display: flex; align-items: center; padding: 6px 0;
+    display: grid;
+    grid-template-columns: var(--row-template);
+    align-items: center;
+    gap: 6px;
+    padding: 5px 0;
     border-bottom: 1px solid #2a2e36;
   }
   .point-row:last-child { border-bottom: none; }
   .point-label {
-    font-size: 13px; color: var(--text-muted); min-width: 140px;
+    font-size: 13px; color: var(--text-muted); min-width: 0;
   }
   .point-value {
-    font-size: 15px; font-weight: 600; min-width: 100px; text-align: right;
+    grid-column: 2;
+    font-size: 15px; font-weight: 600; min-width: 0; text-align: right;
   }
   .point-unit {
-    font-size: 12px; color: var(--text-muted); margin-left: 4px; min-width: 30px;
+    grid-column: 3;
+    font-size: 12px; color: var(--text-muted); min-width: 0;
   }
   .point-quality {
-    margin-left: auto; font-size: 11px;
+    grid-column: 7;
+    justify-self: start;
+    font-size: 11px;
     padding: 2px 8px; border-radius: 4px; font-weight: 600;
   }
   .quality-Good { background: rgba(76,175,80,0.2); color: var(--good); }
@@ -113,6 +132,7 @@
   .value-valid { color: var(--text); }
   /* Teleindication state */
   .ti-state {
+    grid-column: 2 / span 2;
     display: inline-flex; align-items: center; gap: 6px;
   }
   .ti-dot {
@@ -124,7 +144,11 @@
   .ti-code { font-size: 14px; font-weight: 600; }
   /* Timestamp */
   .point-ts {
-    font-size: 11px; color: var(--text-muted); margin-left: 8px;
+    grid-column: 8;
+    font-size: 11px; color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
   }
   /* Error overlay */
   .error-overlay {
@@ -141,39 +165,55 @@
   .no-data p { font-size: 14px; }
   /* Command UI */
   .cmd-row {
-    display: flex; align-items: center; gap: 8px; padding: 6px 0;
+    display: grid;
+    grid-template-columns: var(--row-template);
+    align-items: center;
+    gap: 6px;
+    padding: 5px 0;
     border-bottom: 1px solid #2a2e36;
   }
   .cmd-row:last-child { border-bottom: none; }
   .cmd-label {
-    font-size: 13px; color: var(--text-muted); min-width: 140px;
+    font-size: 13px; color: var(--text-muted); min-width: 0;
+    word-break: break-word;
   }
   .cmd-value {
-    font-size: 15px; font-weight: 600; min-width: 80px; text-align: right;
+    font-size: 15px; font-weight: 600; min-width: 0; text-align: right;
   }
   .cmd-unit {
-    font-size: 12px; color: var(--text-muted); min-width: 30px;
+    font-size: 12px; color: var(--text-muted); min-width: 0;
   }
   .cmd-input {
-    width: 80px; padding: 4px 8px; font-size: 13px;
+    width: 100%; max-width: 92px; min-width: 0; padding: 3px 6px; font-size: 12px;
     background: var(--cmd-bg); border: 1px solid var(--cmd-border);
     border-radius: 4px; color: var(--text); text-align: right;
+    justify-self: start;
   }
   .cmd-btn {
-    padding: 4px 12px; font-size: 12px; font-weight: 600;
+    width: 52px;
+    min-width: 52px;
+    padding: 3px 8px; font-size: 12px; font-weight: 600;
     background: var(--accent); border: none; border-radius: 4px;
     color: #fff; cursor: pointer;
   }
   .cmd-btn:hover { background: #3da8d9; }
   .cmd-btn:disabled { background: var(--text-muted); cursor: not-allowed; }
   .cmd-status {
-    font-size: 11px; min-width: 60px;
+    grid-column: 6;
+    font-size: 11px; min-width: 0;
   }
   .cmd-status.Pending { color: var(--questionable); }
   .cmd-status.Executing { color: var(--accent); }
   .cmd-status.Success { color: var(--good); }
   .cmd-status.Failed { color: var(--bad); }
   .cmd-status.Idle { color: var(--text-muted); }
+  .cmd-time {
+    grid-column: 8;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+  }
   .category-tag {
     font-size: 10px; padding: 2px 6px; border-radius: 3px;
     font-weight: 600; margin-left: 4px;
@@ -183,7 +223,7 @@
 </style>
 </head>
 <body>
-
+<div class="layout-shell">
 <div class="site-header">
   <h1 id="site-title">OpenEMS</h1>
   <div class="site-info">
@@ -209,12 +249,15 @@
     <p>Make sure openems-modbus-collector is running</p>
   </div>
 </div>
+</div>
 
 <script>
 const REFRESH_MS = 1000;
 const DEVICE_TYPE_ICONS = { PV: "☀", BESS: "🔋", Grid: "⚡" };
 const CMD_POLL_MS = 500;
 const pendingCommands = {};  // point_id → { status, interval }
+const inputDrafts = {};      // point_id → current text in input
+const commandTimes = {};     // point_id → formatted time text
 
 function qualityClass(q) { return "quality-" + (q || "Invalid"); }
 function tiStateDot(code) {
@@ -225,11 +268,60 @@ function tiStateDot(code) {
 
 function categoryTag(cat) {
   if (cat === "telecontrol") return '<span class="category-tag category-telecontrol">遥控</span>';
-  if (cat === "setting") return '<span class="category-tag category-setting">遥调</span>';
+  if (cat === "teleadjust") return '<span class="category-tag category-setting">遥调</span>';
   return '';
 }
 
+function formatDateTime(tsMs) {
+  if (!tsMs) return "-";
+  const d = new Date(tsMs);
+  if (Number.isNaN(d.getTime())) return "-";
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
+function snapshotInputState() {
+  const active = document.activeElement;
+  const focusedPointId = active && active.classList && active.classList.contains("cmd-input")
+    ? active.id.replace("cmd-input-", "")
+    : null;
+
+  document.querySelectorAll(".cmd-input").forEach((input) => {
+    const pointId = input.id.replace("cmd-input-", "");
+    inputDrafts[pointId] = input.value;
+  });
+
+  return focusedPointId;
+}
+
+function restoreInputState(focusedPointId) {
+  Object.entries(inputDrafts).forEach(([pointId, value]) => {
+    const input = document.getElementById("cmd-input-" + pointId);
+    if (input && input.value !== value) {
+      input.value = value;
+    }
+  });
+
+  if (focusedPointId) {
+    const focusedInput = document.getElementById("cmd-input-" + focusedPointId);
+    if (focusedInput) {
+      focusedInput.focus();
+      if (typeof focusedInput.setSelectionRange === "function" && focusedInput.type !== "number") {
+        const len = focusedInput.value.length;
+        focusedInput.setSelectionRange(len, len);
+      }
+    }
+  }
+}
+
 function buildCards(points) {
+  const focusedPointId = snapshotInputState();
+
   // Group points by device
   const devices = {};
   for (const p of points) {
@@ -262,6 +354,7 @@ function buildCards(points) {
         if (pendingCommands[p.id]) {
           cmdStatusHtml = `<span class="cmd-status ${pendingCommands[p.id].status}">${pendingCommands[p.id].status}</span>`;
         }
+        const cmdTimeHtml = `<span class="cmd-time">${commandTimes[p.id] || ""}</span>`;
         bodyHtml += `<div class="cmd-row">
           <span class="cmd-label">${p.id}${categoryTag(p.category)}</span>
           <span class="cmd-value ${valClass}">${v}</span>
@@ -270,8 +363,9 @@ function buildCards(points) {
           <button class="cmd-btn" onclick="submitCommand('${p.id}')">执行</button>
           ${cmdStatusHtml}
           <span class="point-quality ${qualityClass(p.quality)}">${p.quality}</span>
+          ${cmdTimeHtml}
         </div>`;
-      } else if (p.category === "telemetry" || p.category === "telecontrol" || p.category === "setting") {
+      } else if (p.category === "telemetry" || p.category === "telecontrol" || p.category === "teleadjust") {
         const valClass = p.valid ? "value-valid" : "value-invalid";
         const v = p.valid ? formatValue(p.value) : "---";
         bodyHtml += `<div class="point-row">
@@ -279,7 +373,7 @@ function buildCards(points) {
           <span class="point-value ${valClass}">${v}</span>
           <span class="point-unit">${p.unit || ""}</span>
           <span class="point-quality ${qualityClass(p.quality)}">${p.quality}</span>
-          <span class="point-ts">${p.timestamp_str || ""}</span>
+          <span class="point-ts">${formatDateTime(p.timestamp)}</span>
         </div>`;
       } else {
         const dotClass = p.valid ? tiStateDot(p.state_code) : "unknown";
@@ -291,7 +385,7 @@ function buildCards(points) {
             <span class="ti-code ${p.valid ? 'value-valid' : 'value-invalid'}">${p.state_code} (${label})</span>
           </span>
           <span class="point-quality ${qualityClass(p.quality)}">${p.quality}</span>
-          <span class="point-ts">${p.timestamp_str || ""}</span>
+          <span class="point-ts">${formatDateTime(p.timestamp)}</span>
         </div>`;
       }
     }
@@ -315,6 +409,8 @@ function buildCards(points) {
       if (el && deviceNames[did]) el.textContent = deviceNames[did];
     }
   }
+
+  restoreInputState(focusedPointId);
 }
 
 function formatValue(v) {
@@ -328,6 +424,7 @@ function formatValue(v) {
 async function submitCommand(pointId) {
   const input = document.getElementById("cmd-input-" + pointId);
   if (!input) return;
+  inputDrafts[pointId] = input.value;
   const value = parseFloat(input.value);
   if (isNaN(value)) {
     alert("请输入有效数值");
@@ -351,10 +448,12 @@ async function submitCommand(pointId) {
       pendingCommands[pointId] = { status: "Pending", interval: null };
     }
     pendingCommands[pointId].status = "Pending";
+    commandTimes[pointId] = formatDateTime(Date.now());
     if (pendingCommands[pointId].interval) clearInterval(pendingCommands[pointId].interval);
     pendingCommands[pointId].interval = setInterval(() => pollCommandStatus(pointId), CMD_POLL_MS);
 
     input.value = "";
+    inputDrafts[pointId] = "";
   } catch (e) {
     alert("网络错误: " + e.message);
   }
@@ -367,6 +466,7 @@ async function pollCommandStatus(pointId) {
     if (data.error) return;
 
     pendingCommands[pointId].status = data.status;
+    commandTimes[pointId] = formatDateTime(data.complete_time || data.submit_time);
 
     if (data.status === "Success" || data.status === "Failed" || data.status === "Idle") {
       if (pendingCommands[pointId].interval) {
@@ -417,7 +517,7 @@ async function refresh() {
     document.getElementById("site-id").textContent = data.site_id || "";
     document.getElementById("site-name").textContent = data.site_name || "";
     document.getElementById("seq-num").textContent = data.update_seq || "-";
-    document.getElementById("last-update").textContent = data.last_update_str || "-";
+    document.getElementById("last-update").textContent = formatDateTime(data.last_update_time);
 
     if (data.points && data.points.length > 0) {
       buildCards(data.points);

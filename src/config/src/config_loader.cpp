@@ -9,7 +9,7 @@ static common::PointCategory parse_point_category(const std::string& s) {
   if (s == "telemetry")      return common::PointCategory::Telemetry;
   if (s == "teleindication") return common::PointCategory::Teleindication;
   if (s == "telecontrol")    return common::PointCategory::Telecontrol;
-  if (s == "setting")        return common::PointCategory::Setting;
+  if (s == "teleadjust")    return common::PointCategory::Setting;
   return common::PointCategory::Telemetry;
 }
 
@@ -144,10 +144,10 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
     OPENEMS_LOG_D("ConfigLoader", "telecontrol.csv not found or empty — skipping");
   }
 
-  auto st_result = load_point_table("setting.csv", common::PointCategory::Setting);
-  // setting.csv is optional — ignore if not found
-  if (!st_result.is_ok()) {
-    OPENEMS_LOG_D("ConfigLoader", "setting.csv not found or empty — skipping");
+  auto ta_result = load_point_table("teleadjust.csv", common::PointCategory::Setting);
+  // teleadjust.csv is optional — ignore if not found
+  if (!ta_result.is_ok()) {
+    OPENEMS_LOG_D("ConfigLoader", "teleadjust.csv not found or empty — skipping");
   }
 
   // 5. Read modbus_mapping.csv

@@ -1,6 +1,6 @@
 // src/apps/src/collector_main.cpp
 // Modbus Collector process: creates RtDb, polls Modbus devices, writes to RtDb
-// Also handles telecontrol/setting write commands via ControlService
+// Also handles telecontrol/teleadjust write commands via ControlService
 #include "openems/config/config_loader.h"
 #include "openems/config/ems_config.h"
 #include "openems/model/site.h"

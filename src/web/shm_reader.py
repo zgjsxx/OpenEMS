@@ -4,7 +4,7 @@ Reads the named shared memory 'Global\\openems_rt_db' created by
 openems-modbus-collector, using the same fixed layout defined in
 rt_db_layout.h.
 
-Also supports command slot operations for telecontrol/setting write operations.
+Also supports command slot operations for telecontrol/teleadjust write operations.
 """
 
 import ctypes
@@ -114,7 +114,7 @@ K_MAGIC = 0x454D5300
 K_VERSION = 2
 
 QUALITY_MAP = {0: "Good", 1: "Questionable", 2: "Bad", 3: "Invalid"}
-CATEGORY_MAP = {0: "telemetry", 1: "teleindication", 2: "telecontrol", 3: "setting"}
+CATEGORY_MAP = {0: "telemetry", 1: "teleindication", 2: "telecontrol", 3: "teleadjust"}
 COMMAND_STATUS_MAP = {0: "Pending", 1: "Executing", 2: "Success", 3: "Failed", 4: "Idle"}
 
 
@@ -231,7 +231,7 @@ class ShmReader:
                 unit = entry.unit.decode("ascii").rstrip("\x00")
                 writable = entry.writable
 
-                if cat == 0 or cat == 2 or cat == 3:  # telemetry / telecontrol / setting
+                if cat == 0 or cat == 2 or cat == 3:  # telemetry / telecontrol / teleadjust
                     slot = telem_slots[telem_idx]
                     ts_ms = slot.timestamp
                     ts_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(

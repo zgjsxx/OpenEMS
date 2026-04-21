@@ -2,7 +2,7 @@
 
 Serves a real-time dashboard that reads data from the OpenEMS RtDb
 shared memory and displays it as a web page.
-Also supports command submission for telecontrol/setting write operations.
+Also supports command submission for telecontrol/teleadjust write operations.
 """
 
 import os
@@ -59,7 +59,7 @@ async def api_snapshot():
 
 @app.post("/api/command")
 async def api_submit_command(req: CommandRequest):
-    """Submit a telecontrol/setting command to a writable point."""
+    """Submit a telecontrol/teleadjust command to a writable point."""
     if not _reader.is_attached():
         await asyncio.to_thread(_reader.attach)
     if not _reader.is_attached():
@@ -122,12 +122,12 @@ async def api_config():
     except Exception:
         pass
 
-    setting = []
+    teleadjust = []
     try:
-        with open(CONFIG_DIR / "setting.csv", encoding="utf-8") as f:
+        with open(CONFIG_DIR / "teleadjust.csv", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                setting.append(row)
+                teleadjust.append(row)
     except Exception:
         pass
 
@@ -136,5 +136,5 @@ async def api_config():
         "telemetry": telemetry,
         "teleindication": teleindication,
         "telecontrol": telecontrol,
-        "setting": setting,
+        "teleadjust": teleadjust,
     })

@@ -43,7 +43,7 @@ struct TeleindicationSlot {
 };
 // sizeof = 16, aligned
 
-// Command slot for telecontrol/setting write operations
+// Command slot for telecontrol/teleadjust write operations
 // Cross-process command delivery via shared memory
 struct CommandSlot {
   char     point_id[kMaxPointIdLen]; // 32 bytes — target point
@@ -64,7 +64,7 @@ struct PointIndexEntry {
   char     device_id[kMaxDeviceIdLen]; // which device this point belongs to
   uint8_t  point_category;             // 0=Telemetry, 1=Teleindication, 2=Telecontrol, 3=Setting
   uint8_t  data_type;                  // original DataType enum for reference
-  uint8_t  writable;                   // 1=writable (telecontrol/setting), 0=read-only
+  uint8_t  writable;                   // 1=writable (telecontrol/teleadjust), 0=read-only
   uint8_t  reserved1;                  // padding
   uint32_t slot_offset;                // byte offset into DataSection
   char     unit[8];                    // e.g. "W", "V", "A", "%"

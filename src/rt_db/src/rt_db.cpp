@@ -561,7 +561,7 @@ common::Result<TelemetryReadResult> RtDb::read_telemetry(const common::PointId& 
   auto cat = index_table_[idx].point_category;
   if (cat != 0 && cat != 2 && cat != 3) {
     return common::Result<TelemetryReadResult>::Err(
-        common::ErrorCode::InvalidArgument, "Point is not telemetry/telecontrol/setting: " + pid);
+        common::ErrorCode::InvalidArgument, "Point is not telemetry/telecontrol/teleadjust: " + pid);
   }
 
   uint32_t telem_idx = 0;

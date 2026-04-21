@@ -1,2 +1,3 @@
 id,device_id,name,code,data_type,unit,writable
+pv-start-stop,pv-001,Start/Stop,PV_START_STOP,bool,,true
 bess-start-stop,bess-001,Start/Stop,BESS_START_STOP,bool,,true

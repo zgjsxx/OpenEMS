@@ -14,6 +14,11 @@ static std::string trim(const std::string& s) {
   return s.substr(start, end - start + 1);
 }
 
+static bool is_comment_line(const std::string& line) {
+  auto trimmed = trim(line);
+  return !trimmed.empty() && trimmed[0] == '#';
+}
+
 static std::vector<std::string> split_csv_line(const std::string& line) {
   std::vector<std::string> fields;
   std::string field;
@@ -57,16 +62,24 @@ common::Result<CsvTable> parse_csv_file(const std::string& path) {
   CsvTable table;
   std::string line;
 
-  // First line: headers
-  if (!std::getline(file, line)) {
+  // First non-empty, non-comment line: headers
+  bool header_found = false;
+  while (std::getline(file, line)) {
+    auto trimmed = trim(line);
+    if (trimmed.empty() || is_comment_line(trimmed)) continue;
+    table.headers = split_csv_line(line);
+    header_found = true;
+    break;
+  }
+  if (!header_found) {
     return common::Result<CsvTable>::Err(
         common::ErrorCode::InvalidConfig, "CSV has no header: " + path);
   }
-  table.headers = split_csv_line(line);
 
   // Data rows
   while (std::getline(file, line)) {
-    if (trim(line).empty()) continue;
+    auto trimmed = trim(line);
+    if (trimmed.empty() || is_comment_line(trimmed)) continue;
     auto fields = split_csv_line(line);
     // Pad with empty strings if row has fewer fields than headers
     while (fields.size() < table.headers.size()) {

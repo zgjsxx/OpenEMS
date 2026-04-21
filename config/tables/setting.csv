@@ -1,3 +1,0 @@
-id,device_id,name,code,data_type,unit,writable
-bess-target-power,bess-001,Target Power,BESS_TGT_P,int32,W,true
-bess-target-soc,bess-001,Target SOC,BESS_TGT_SOC,uint16,%,true
