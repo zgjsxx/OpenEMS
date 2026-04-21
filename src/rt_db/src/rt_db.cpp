@@ -63,7 +63,8 @@ static void* shm_attach(const std::string& name, size_t* out_size, void** out_ha
   size_t total_size = sizeof(ShmHeader)
       + hdr->total_point_count * sizeof(PointIndexEntry)
       + hdr->telemetry_count * sizeof(TelemetrySlot)
-      + hdr->teleindication_count * sizeof(TeleindicationSlot);
+      + hdr->teleindication_count * sizeof(TeleindicationSlot)
+      + hdr->command_count * sizeof(CommandSlot);
   UnmapViewOfFile(hdr_addr);
 
   // Now map the full region
@@ -81,7 +82,8 @@ static void* shm_attach(const std::string& name, size_t* out_size, void** out_ha
   size_t total_size = sizeof(ShmHeader)
       + hdr.total_point_count * sizeof(PointIndexEntry)
       + hdr.telemetry_count * sizeof(TelemetrySlot)
-      + hdr.teleindication_count * sizeof(TeleindicationSlot);
+      + hdr.teleindication_count * sizeof(TeleindicationSlot)
+      + hdr.command_count * sizeof(CommandSlot);
   void* addr = mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (addr == MAP_FAILED) { close(fd); return nullptr; }
   *out_size = total_size;
@@ -114,14 +116,16 @@ RtDb::~RtDb() {
 
 common::Result<RtDb*> RtDb::create(const std::string& shm_name,
                                     uint32_t telemetry_count,
-                                    uint32_t teleindication_count) {
+                                    uint32_t teleindication_count,
+                                    uint32_t command_count) {
   auto* db = new RtDb(shm_name, true);
 
   uint32_t total = telemetry_count + teleindication_count;
   size_t shm_size = sizeof(ShmHeader)
       + total * sizeof(PointIndexEntry)
       + telemetry_count * sizeof(TelemetrySlot)
-      + teleindication_count * sizeof(TeleindicationSlot);
+      + teleindication_count * sizeof(TeleindicationSlot)
+      + command_count * sizeof(CommandSlot);
 
   void* handle = nullptr;
   void* addr = shm_create(shm_name, shm_size, &handle);
@@ -144,9 +148,11 @@ common::Result<RtDb*> RtDb::create(const std::string& shm_name,
   hdr->telemetry_count = telemetry_count;
   hdr->teleindication_count = teleindication_count;
   hdr->total_point_count = total;
+  hdr->command_count = command_count;
   hdr->index_table_offset = sizeof(ShmHeader);
   hdr->telemetry_offset = sizeof(ShmHeader) + total * sizeof(PointIndexEntry);
   hdr->teleindication_offset = hdr->telemetry_offset + telemetry_count * sizeof(TelemetrySlot);
+  hdr->command_offset = hdr->teleindication_offset + teleindication_count * sizeof(TeleindicationSlot);
   hdr->update_seq = 0;
   hdr->last_update_time = now_ms();
 
@@ -154,11 +160,13 @@ common::Result<RtDb*> RtDb::create(const std::string& shm_name,
   db->index_table_ = reinterpret_cast<PointIndexEntry*>(db->mapped_addr_ + hdr->index_table_offset);
   db->telemetry_slots_ = reinterpret_cast<TelemetrySlot*>(db->mapped_addr_ + hdr->telemetry_offset);
   db->teleindication_slots_ = reinterpret_cast<TeleindicationSlot*>(db->mapped_addr_ + hdr->teleindication_offset);
+  db->command_slots_ = reinterpret_cast<CommandSlot*>(db->mapped_addr_ + hdr->command_offset);
 
   OPENEMS_LOG_I("RtDb", "Created shared memory: " + shm_name +
       " size=" + std::to_string(shm_size) +
       " telem=" + std::to_string(telemetry_count) +
-      " ti=" + std::to_string(teleindication_count));
+      " ti=" + std::to_string(teleindication_count) +
+      " cmd=" + std::to_string(command_count));
 
   return common::Result<RtDb*>::Ok(db);
 }
@@ -193,10 +201,12 @@ common::Result<RtDb*> RtDb::attach(const std::string& shm_name) {
   db->index_table_ = reinterpret_cast<PointIndexEntry*>(db->mapped_addr_ + hdr->index_table_offset);
   db->telemetry_slots_ = reinterpret_cast<TelemetrySlot*>(db->mapped_addr_ + hdr->telemetry_offset);
   db->teleindication_slots_ = reinterpret_cast<TeleindicationSlot*>(db->mapped_addr_ + hdr->teleindication_offset);
+  db->command_slots_ = reinterpret_cast<CommandSlot*>(db->mapped_addr_ + hdr->command_offset);
 
   OPENEMS_LOG_I("RtDb", "Attached shared memory: " + shm_name +
       " telem=" + std::to_string(hdr->telemetry_count) +
-      " ti=" + std::to_string(hdr->teleindication_count));
+      " ti=" + std::to_string(hdr->teleindication_count) +
+      " cmd=" + std::to_string(hdr->command_count));
 
   return common::Result<RtDb*>::Ok(db);
 }
@@ -220,7 +230,8 @@ common::VoidResult RtDb::register_point(const common::PointId& pid,
                                          const common::DeviceId& did,
                                          uint8_t point_category,
                                          uint8_t data_type,
-                                         const std::string& unit) {
+                                         const std::string& unit,
+                                         bool writable) {
   if (!header_) return common::VoidResult::Err(common::ErrorCode::InvalidConfig, "Not initialized");
 
   std::lock_guard lock(process_mutex_);
@@ -236,12 +247,16 @@ common::VoidResult RtDb::register_point(const common::PointId& pid,
       std::strncpy(entry.device_id, did.c_str(), kMaxDeviceIdLen - 1);
       entry.point_category = point_category;
       entry.data_type = data_type;
+      entry.writable = writable ? 1 : 0;
+      entry.reserved1 = 0;
 
       // Compute slot offset based on category
-      if (point_category == 0) {  // Telemetry
+      if (point_category == 0 || point_category == 2 || point_category == 3) {  // Telemetry / Telecontrol / Setting
         uint32_t telem_idx = 0;
         for (uint32_t j = 0; j < i; ++j) {
-          if (index_table_[j].point_category == 0) telem_idx++;
+          if (index_table_[j].point_category == 0 ||
+              index_table_[j].point_category == 2 ||
+              index_table_[j].point_category == 3) telem_idx++;
         }
         entry.slot_offset = telem_idx * sizeof(TelemetrySlot);
         // Initialize slot
@@ -268,6 +283,7 @@ common::VoidResult RtDb::register_point(const common::PointId& pid,
 
       OPENEMS_LOG_D("RtDb", "Registered point: " + pid +
           " category=" + std::to_string(point_category) +
+          " writable=" + std::to_string(entry.writable) +
           " idx=" + std::to_string(i));
       return common::VoidResult::Ok();
     }
@@ -280,9 +296,43 @@ common::VoidResult RtDb::register_point(const common::PointId& pid,
   return common::VoidResult::Err(common::ErrorCode::InvalidArgument, "No empty slots in index table");
 }
 
+common::VoidResult RtDb::register_command_point(const common::PointId& pid) {
+  if (!header_ || !command_slots_) return common::VoidResult::Err(common::ErrorCode::InvalidConfig, "Not initialized");
+
+  std::lock_guard lock(process_mutex_);
+
+  // Find empty command slot
+  for (uint32_t i = 0; i < header_->command_count; ++i) {
+    auto& slot = command_slots_[i];
+    if (slot.point_id[0] == '\0') {
+      std::memset(slot.point_id, 0, kMaxPointIdLen);
+      std::strncpy(slot.point_id, pid.c_str(), kMaxPointIdLen - 1);
+      slot.status = CommandIdle;
+      slot.desired_value = 0.0;
+      slot.result_value = 0.0;
+      slot.error_code = 0;
+      OPENEMS_LOG_D("RtDb", "Registered command point: " + pid + " slot=" + std::to_string(i));
+      return common::VoidResult::Ok();
+    }
+    if (std::strncmp(slot.point_id, pid.c_str(), kMaxPointIdLen) == 0) {
+      return common::VoidResult::Ok();  // Already registered
+    }
+  }
+  return common::VoidResult::Err(common::ErrorCode::InvalidArgument, "No empty command slots");
+}
+
 int32_t RtDb::find_point_index(const common::PointId& pid) const {
   for (uint32_t i = 0; i < header_->total_point_count; ++i) {
     if (std::strncmp(index_table_[i].point_id, pid.c_str(), kMaxPointIdLen) == 0) {
+      return static_cast<int32_t>(i);
+    }
+  }
+  return -1;
+}
+
+int32_t RtDb::find_command_slot(const common::PointId& pid) const {
+  for (uint32_t i = 0; i < header_->command_count; ++i) {
+    if (std::strncmp(command_slots_[i].point_id, pid.c_str(), kMaxPointIdLen) == 0) {
       return static_cast<int32_t>(i);
     }
   }
@@ -298,12 +348,15 @@ void RtDb::write_telemetry(const common::PointId& pid,
   std::lock_guard lock(process_mutex_);
 
   int32_t idx = find_point_index(pid);
-  if (idx < 0 || index_table_[idx].point_category != 0) return;
+  if (idx < 0) return;
+  auto cat = index_table_[idx].point_category;
+  if (cat != 0 && cat != 2 && cat != 3) return;
 
   // Count which telemetry slot this maps to
   uint32_t telem_idx = 0;
   for (uint32_t j = 0; j < static_cast<uint32_t>(idx); ++j) {
-    if (index_table_[j].point_category == 0) telem_idx++;
+    auto jc = index_table_[j].point_category;
+    if (jc == 0 || jc == 2 || jc == 3) telem_idx++;
   }
 
   // Seqlock write: increment sequence (odd = writing)
@@ -360,11 +413,14 @@ void RtDb::write_telemetry_batch(
 
   for (size_t i = 0; i < pids.size(); ++i) {
     int32_t idx = find_point_index(pids[i]);
-    if (idx < 0 || index_table_[idx].point_category != 0) continue;
+    if (idx < 0) continue;
+    auto cat = index_table_[idx].point_category;
+    if (cat != 0 && cat != 2 && cat != 3) continue;
 
     uint32_t telem_idx = 0;
     for (uint32_t j = 0; j < static_cast<uint32_t>(idx); ++j) {
-      if (index_table_[j].point_category == 0) telem_idx++;
+      auto jc = index_table_[j].point_category;
+      if (jc == 0 || jc == 2 || jc == 3) telem_idx++;
     }
 
     auto& slot = telemetry_slots_[telem_idx];
@@ -407,6 +463,93 @@ void RtDb::write_teleindication_batch(
   header_->update_seq++;
 }
 
+// ===== Command API =====
+
+common::VoidResult RtDb::submit_command(const common::PointId& pid, double desired_value) {
+  std::lock_guard lock(process_mutex_);
+
+  int32_t slot_idx = find_command_slot(pid);
+  if (slot_idx < 0) {
+    return common::VoidResult::Err(common::ErrorCode::PointNotFound, "Command slot not found: " + pid);
+  }
+
+  auto& slot = command_slots_[slot_idx];
+  slot.desired_value = desired_value;
+  slot.submit_time = now_ms();
+  slot.status = CommandPending;
+  slot.error_code = 0;
+  slot.result_value = 0.0;
+  slot.complete_time = 0;
+
+  header_->update_seq++;
+  header_->update_seq |= 1ULL;
+  header_->last_update_time = now_ms();
+  header_->update_seq++;
+
+  OPENEMS_LOG_I("RtDb", "Command submitted: " + pid + " value=" + std::to_string(desired_value));
+  return common::VoidResult::Ok();
+}
+
+bool RtDb::read_pending_command(common::PointId& out_pid, double& out_value) {
+  std::lock_guard lock(process_mutex_);
+
+  for (uint32_t i = 0; i < header_->command_count; ++i) {
+    auto& slot = command_slots_[i];
+    if (slot.status == CommandPending) {
+      out_pid = std::string(slot.point_id, kMaxPointIdLen);
+      out_pid.erase(out_pid.find('\0'));
+      out_value = slot.desired_value;
+      slot.status = CommandExecuting;
+      return true;
+    }
+  }
+  return false;
+}
+
+void RtDb::complete_command(const common::PointId& pid,
+                             CommandStatus status,
+                             double result_value,
+                             uint8_t error_code) {
+  std::lock_guard lock(process_mutex_);
+
+  int32_t slot_idx = find_command_slot(pid);
+  if (slot_idx < 0) return;
+
+  header_->update_seq++;
+  header_->update_seq |= 1ULL;
+
+  auto& slot = command_slots_[slot_idx];
+  slot.status = static_cast<uint8_t>(status);
+  slot.result_value = result_value;
+  slot.error_code = error_code;
+  slot.complete_time = now_ms();
+
+  header_->last_update_time = now_ms();
+  header_->update_seq++;
+
+  OPENEMS_LOG_I("RtDb", "Command completed: " + pid +
+      " status=" + std::to_string(static_cast<uint8_t>(status)) +
+      " result=" + std::to_string(result_value));
+}
+
+common::Result<CommandReadResult> RtDb::read_command_status(const common::PointId& pid) {
+  int32_t slot_idx = find_command_slot(pid);
+  if (slot_idx < 0) {
+    return common::Result<CommandReadResult>::Err(
+        common::ErrorCode::PointNotFound, "Command slot not found: " + pid);
+  }
+
+  auto& slot = command_slots_[slot_idx];
+  CommandReadResult result;
+  result.desired_value = slot.desired_value;
+  result.result_value = slot.result_value;
+  result.submit_time = slot.submit_time;
+  result.complete_time = slot.complete_time;
+  result.status = static_cast<CommandStatus>(slot.status);
+  result.error_code = slot.error_code;
+  return common::Result<CommandReadResult>::Ok(result);
+}
+
 // ===== Read API =====
 
 common::Result<TelemetryReadResult> RtDb::read_telemetry(const common::PointId& pid) {
@@ -415,14 +558,16 @@ common::Result<TelemetryReadResult> RtDb::read_telemetry(const common::PointId& 
     return common::Result<TelemetryReadResult>::Err(
         common::ErrorCode::PointNotFound, "Point not found: " + pid);
   }
-  if (index_table_[idx].point_category != 0) {
+  auto cat = index_table_[idx].point_category;
+  if (cat != 0 && cat != 2 && cat != 3) {
     return common::Result<TelemetryReadResult>::Err(
-        common::ErrorCode::InvalidArgument, "Point is not telemetry: " + pid);
+        common::ErrorCode::InvalidArgument, "Point is not telemetry/telecontrol/setting: " + pid);
   }
 
   uint32_t telem_idx = 0;
   for (uint32_t j = 0; j < static_cast<uint32_t>(idx); ++j) {
-    if (index_table_[j].point_category == 0) telem_idx++;
+    auto jc = index_table_[j].point_category;
+    if (jc == 0 || jc == 2 || jc == 3) telem_idx++;
   }
 
   // Seqlock read: retry if sequence was odd (write in progress) or changed
@@ -489,11 +634,9 @@ SiteSnapshot RtDb::snapshot() {
   snap.site_name = std::string(header_->site_name, kMaxSiteNameLen);
   snap.site_name.erase(snap.site_name.find('\0'));
 
-  // Increment seqlock (odd = writing snapshot... not really, but we want consistency)
   uint64_t seq1 = header_->update_seq;
   if (seq1 & 1ULL) {
     // Write in progress, wait briefly
-    // For simplicity, just read under process_mutex which blocks writes anyway
   }
 
   for (uint32_t i = 0; i < header_->total_point_count; ++i) {
@@ -509,17 +652,19 @@ SiteSnapshot RtDb::snapshot() {
     snap.device_ids.push_back(did);
     snap.point_categories.push_back(entry.point_category);
 
-    if (entry.point_category == 0) {  // Telemetry
+    auto cat = entry.point_category;
+    if (cat == 0 || cat == 2 || cat == 3) {  // Telemetry / Telecontrol / Setting
       uint32_t telem_idx = 0;
       for (uint32_t j = 0; j < i; ++j) {
-        if (index_table_[j].point_category == 0) telem_idx++;
+        auto jc = index_table_[j].point_category;
+        if (jc == 0 || jc == 2 || jc == 3) telem_idx++;
       }
       auto& slot = telemetry_slots_[telem_idx];
       snap.telemetry_values.push_back(slot.value);
       snap.qualities.push_back(static_cast<common::Quality>(slot.quality));
       snap.valids.push_back(slot.valid != 0);
       snap.timestamps.push_back(slot.timestamp);
-    } else if (entry.point_category == 1) {  // Teleindication
+    } else if (cat == 1) {  // Teleindication
       uint32_t ti_idx = 0;
       for (uint32_t j = 0; j < i; ++j) {
         if (index_table_[j].point_category == 1) ti_idx++;
@@ -544,11 +689,12 @@ std::string SiteSnapshot::to_string() const {
     oss << "  [" << point_ids[i] << "] "
         << "dev=" << device_ids[i] << " ";
 
-    if (point_categories[i] == 0) {
-      // Telemetry
+    auto cat = point_categories[i];
+    if (cat == 0 || cat == 2 || cat == 3) {
+      // Telemetry / Telecontrol / Setting
       size_t telem_idx = 0;
       for (size_t j = 0; j <= i; ++j) {
-        if (point_categories[j] == 0 && j < i) telem_idx++;
+        if ((point_categories[j] == 0 || point_categories[j] == 2 || point_categories[j] == 3) && j < i) telem_idx++;
       }
       oss << "TELEM val=" << telemetry_values[telem_idx];
     } else {
@@ -576,6 +722,7 @@ void RtDb::print_snapshot() {
 uint32_t RtDb::telemetry_count() const { return header_ ? header_->telemetry_count : 0; }
 uint32_t RtDb::teleindication_count() const { return header_ ? header_->teleindication_count : 0; }
 uint32_t RtDb::total_point_count() const { return header_ ? header_->total_point_count : 0; }
+uint32_t RtDb::command_count() const { return header_ ? header_->command_count : 0; }
 uint64_t RtDb::update_sequence() const { return header_ ? header_->update_seq : 0; }
 
 } // namespace openems::rt_db

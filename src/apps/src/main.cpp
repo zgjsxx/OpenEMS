@@ -175,7 +175,7 @@ int main(int argc, char* argv[]) {
       " telemetry=" + std::to_string(telem_count) +
       " teleindication=" + std::to_string(ti_count));
 
-  auto rtdb_result = openems::rt_db::RtDb::create(shm_name, telem_count, ti_count);
+  auto rtdb_result = openems::rt_db::RtDb::create(shm_name, telem_count, ti_count, 0);
   if (!rtdb_result.is_ok()) {
     OPENEMS_LOG_F("Main", "RtDb create failed: " + rtdb_result.error_msg());
     return 1;

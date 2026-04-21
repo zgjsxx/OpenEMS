@@ -30,6 +30,13 @@ public:
 
   // 将解析后的工程值根据 DataType 封装回 ValueVariant
   static model::ValueVariant to_value_variant(double eng_value, common::DataType target_type);
+
+  // 将工程值反向编码为原始寄存器值 (engineering → raw)
+  static common::Result<std::vector<uint16_t>> encode_register(
+      double eng_value, const model::ModbusPointMapping& mapping);
+
+  // 将工程值反向编码为线圈值 (engineering → coil)
+  static bool encode_coil(double eng_value);
 };
 
 } // namespace openems::modbus

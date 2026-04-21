@@ -164,4 +164,120 @@ model::ValueVariant ModbusDataParser::to_value_variant(
   }
 }
 
+bool ModbusDataParser::encode_coil(double eng_value) {
+  return eng_value != 0.0;
+}
+
+common::Result<std::vector<uint16_t>> ModbusDataParser::encode_register(
+    double eng_value, const model::ModbusPointMapping& mapping) {
+  // Reverse scaling: eng_value = raw * scale + offset → raw = (eng_value - offset) / scale
+  double raw_double = (eng_value - mapping.offset) / mapping.scale;
+
+  std::vector<uint16_t> words;
+
+  switch (mapping.data_type) {
+    case common::DataType::Bool:
+    case common::DataType::Uint16:
+      words.push_back(static_cast<uint16_t>(std::round(raw_double)));
+      break;
+
+    case common::DataType::Int16:
+      words.push_back(static_cast<uint16_t>(static_cast<int16_t>(std::round(raw_double))));
+      break;
+
+    case common::DataType::Uint32: {
+      uint32_t raw = static_cast<uint32_t>(std::round(raw_double));
+      if (mapping.word_swap) {
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+      } else {
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+      }
+      break;
+    }
+
+    case common::DataType::Int32: {
+      uint32_t raw = static_cast<uint32_t>(static_cast<int32_t>(std::round(raw_double)));
+      if (mapping.word_swap) {
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+      } else {
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+      }
+      break;
+    }
+
+    case common::DataType::Float32: {
+      float f = static_cast<float>(raw_double);
+      uint32_t raw;
+      std::memcpy(&raw, &f, sizeof(f));
+      if (mapping.word_swap) {
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+      } else {
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+      }
+      break;
+    }
+
+    case common::DataType::Int64: {
+      uint64_t raw = static_cast<uint64_t>(static_cast<int64_t>(std::round(raw_double)));
+      if (mapping.word_swap) {
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 32) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 48) & 0xFFFF));
+      } else {
+        words.push_back(static_cast<uint16_t>((raw >> 48) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 32) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+      }
+      break;
+    }
+
+    case common::DataType::Uint64: {
+      uint64_t raw = static_cast<uint64_t>(std::round(raw_double));
+      if (mapping.word_swap) {
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 32) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 48) & 0xFFFF));
+      } else {
+        words.push_back(static_cast<uint16_t>((raw >> 48) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 32) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+      }
+      break;
+    }
+
+    case common::DataType::Double: {
+      uint64_t raw;
+      std::memcpy(&raw, &raw_double, sizeof(raw_double));
+      if (mapping.word_swap) {
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 32) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 48) & 0xFFFF));
+      } else {
+        words.push_back(static_cast<uint16_t>((raw >> 48) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 32) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>((raw >> 16) & 0xFFFF));
+        words.push_back(static_cast<uint16_t>(raw & 0xFFFF));
+      }
+      break;
+    }
+
+    default:
+      return common::Result<std::vector<uint16_t>>::Err(
+          common::ErrorCode::ParseError, "Unsupported data type for encoding");
+  }
+
+  return common::Result<std::vector<uint16_t>>::Ok(words);
+}
+
 } // namespace openems::modbus

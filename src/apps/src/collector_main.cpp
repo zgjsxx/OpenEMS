@@ -1,5 +1,6 @@
 // src/apps/src/collector_main.cpp
 // Modbus Collector process: creates RtDb, polls Modbus devices, writes to RtDb
+// Also handles telecontrol/setting write commands via ControlService
 #include "openems/config/config_loader.h"
 #include "openems/config/ems_config.h"
 #include "openems/model/site.h"
@@ -7,6 +8,7 @@
 #include "openems/model/point.h"
 #include "openems/modbus/modbus_tcp_client.h"
 #include "openems/collector/polling_service.h"
+#include "openems/collector/control_service.h"
 #include "openems/rt_db/rt_db.h"
 #include "openems/utils/logger.h"
 
@@ -15,6 +17,7 @@
 #include <chrono>
 #include <csignal>
 #include <atomic>
+#include <unordered_map>
 
 static std::atomic<bool> g_running{true};
 
@@ -48,13 +51,31 @@ static uint32_t count_category(const openems::config::EmsConfig& cfg,
   return count;
 }
 
+static uint32_t count_writable(const openems::config::EmsConfig& cfg) {
+  uint32_t count = 0;
+  for (auto& dc : cfg.site.devices)
+    for (auto& pc : dc.points)
+      if (pc.writable) count++;
+  return count;
+}
+
 static void register_points(openems::rt_db::RtDb* db, const openems::config::EmsConfig& cfg) {
   for (auto& dc : cfg.site.devices) {
     if (dc.protocol != "modbus-tcp") continue;
     for (auto& pc : dc.points) {
       uint8_t category = 0;
       if (pc.category == openems::common::PointCategory::Teleindication) category = 1;
-      db->register_point(pc.id, dc.id, category, static_cast<uint8_t>(pc.data_type), pc.unit);
+      if (pc.category == openems::common::PointCategory::Telecontrol) category = 2;
+      if (pc.category == openems::common::PointCategory::Setting) category = 3;
+      db->register_point(pc.id, dc.id, category, static_cast<uint8_t>(pc.data_type), pc.unit, pc.writable);
+
+      // Register command slot for writable points
+      if (pc.writable && pc.has_modbus_mapping) {
+        uint8_t fc = pc.modbus_mapping.function_code;
+        if (fc == 5 || fc == 6 || fc == 16) {
+          db->register_command_point(pc.id);
+        }
+      }
     }
   }
 }
@@ -81,15 +102,21 @@ int main(int argc, char* argv[]) {
   std::string shm_name = "Global\\openems_rt_db";
   uint32_t ti_count = 0;
   uint32_t telem_count = 0;
+  uint32_t cmd_count = 0;
   for (auto& dc : cfg.site.devices) {
     if (dc.protocol != "modbus-tcp") continue;
     for (auto& pc : dc.points) {
       if (pc.category == openems::common::PointCategory::Teleindication) ti_count++;
       else telem_count++;
+      // Count writable points with write FCs as command slots
+      if (pc.writable && pc.has_modbus_mapping) {
+        uint8_t fc = pc.modbus_mapping.function_code;
+        if (fc == 5 || fc == 6 || fc == 16) cmd_count++;
+      }
     }
   }
 
-  auto rtdb_result = openems::rt_db::RtDb::create(shm_name, telem_count, ti_count);
+  auto rtdb_result = openems::rt_db::RtDb::create(shm_name, telem_count, ti_count, cmd_count);
   if (!rtdb_result.is_ok()) {
     OPENEMS_LOG_F("Collector", "RtDb create failed: " + rtdb_result.error_msg());
     return 1;
@@ -97,9 +124,8 @@ int main(int argc, char* argv[]) {
   auto* db = rtdb_result.value();
   register_points(db, cfg);
 
-  // Setup polling tasks — each writes to RtDb
-  auto poll_service = openems::collector::PollingServiceCreate();
-  poll_service->set_default_interval(cfg.default_poll_interval_ms);
+  // Create shared Modbus clients for both poll and control tasks
+  std::unordered_map<openems::common::DeviceId, openems::modbus::ModbusTcpClientPtr> modbus_clients;
 
   for (auto& device : site->devices()) {
     openems::modbus::ModbusConfig mb_cfg;
@@ -110,17 +136,57 @@ int main(int argc, char* argv[]) {
 
     auto client = openems::modbus::ModbusTcpClientCreate(mb_cfg);
     client->connect();
-
-    auto task = openems::collector::DevicePollTaskCreate(device, client, db);
-    poll_service->add_task(std::move(task));
+    modbus_clients[device->id()] = client;
   }
+
+  // Setup polling tasks — each writes to RtDb
+  auto poll_service = openems::collector::PollingServiceCreate();
+  poll_service->set_default_interval(cfg.default_poll_interval_ms);
+
+  // Setup control tasks — each reads commands from RtDb and writes to Modbus
+  auto ctrl_service = openems::collector::ControlServiceCreate();
+  ctrl_service->set_default_interval(100);  // 100ms default for control
+
+  bool has_writable_points = false;
+
+  for (auto& device : site->devices()) {
+    auto& client = modbus_clients[device->id()];
+
+    // Polling task for all devices
+    auto poll_task = openems::collector::DevicePollTaskCreate(device, client, db);
+    poll_service->add_task(std::move(poll_task));
+
+    // Control task for devices with writable points
+    bool device_has_writable = false;
+    for (auto& pt : device->points()) {
+      if (pt->writable() && pt->has_modbus_mapping()) {
+        uint8_t fc = pt->modbus_mapping().function_code;
+        if (fc == 5 || fc == 6 || fc == 16) {
+          device_has_writable = true;
+          has_writable_points = true;
+        }
+      }
+    }
+
+    if (device_has_writable) {
+      auto ctrl_task = openems::collector::DeviceControlTaskCreate(device, client, db);
+      ctrl_service->add_task(std::move(ctrl_task));
+    }
+  }
+
   poll_service->start();
+  if (has_writable_points) {
+    ctrl_service->start();
+  }
 
   OPENEMS_LOG_I("Collector", "Running. Shared memory: " + shm_name);
   while (g_running.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
   }
 
+  if (has_writable_points) {
+    ctrl_service->stop();
+  }
   poll_service->stop();
   delete db;
   OPENEMS_LOG_I("Collector", "Shutdown.");

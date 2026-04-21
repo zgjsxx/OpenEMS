@@ -2,6 +2,7 @@
 
 Serves a real-time dashboard that reads data from the OpenEMS RtDb
 shared memory and displays it as a web page.
+Also supports command submission for telecontrol/setting write operations.
 """
 
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 from shm_reader import ShmReader
 
@@ -21,6 +23,12 @@ app = FastAPI(title="OpenEMS Dashboard")
 
 # Global reader — attached once on startup
 _reader = ShmReader()
+
+
+class CommandRequest(BaseModel):
+    point_id: str
+    desired_value: float
+
 
 @app.on_event("startup")
 async def startup():
@@ -47,6 +55,32 @@ async def api_snapshot():
         _reader.detach()
         return JSONResponse(data, status_code=503)
     return JSONResponse(data)
+
+
+@app.post("/api/command")
+async def api_submit_command(req: CommandRequest):
+    """Submit a telecontrol/setting command to a writable point."""
+    if not _reader.is_attached():
+        await asyncio.to_thread(_reader.attach)
+    if not _reader.is_attached():
+        return JSONResponse({"error": "Shared memory not available"}, status_code=503)
+    result = await asyncio.to_thread(_reader.submit_command, req.point_id, req.desired_value)
+    if "error" in result:
+        return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
+@app.get("/api/command/{point_id}")
+async def api_command_status(point_id: str):
+    """Read command status for a point."""
+    if not _reader.is_attached():
+        await asyncio.to_thread(_reader.attach)
+    if not _reader.is_attached():
+        return JSONResponse({"error": "Shared memory not available"}, status_code=503)
+    result = await asyncio.to_thread(_reader.read_command_status, point_id)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    return JSONResponse(result)
 
 
 @app.get("/api/config")
@@ -79,8 +113,28 @@ async def api_config():
     except Exception:
         pass
 
+    telecontrol = []
+    try:
+        with open(CONFIG_DIR / "telecontrol.csv", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                telecontrol.append(row)
+    except Exception:
+        pass
+
+    setting = []
+    try:
+        with open(CONFIG_DIR / "setting.csv", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                setting.append(row)
+    except Exception:
+        pass
+
     return JSONResponse({
         "devices": devices,
         "telemetry": telemetry,
         "teleindication": teleindication,
+        "telecontrol": telecontrol,
+        "setting": setting,
     })

@@ -138,6 +138,18 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
   auto ti_result = load_point_table("teleindication.csv", common::PointCategory::Teleindication);
   if (!ti_result.is_ok()) return common::Result<EmsConfig>::Err(ti_result.error_code(), ti_result.error_msg());
 
+  auto tc_result = load_point_table("telecontrol.csv", common::PointCategory::Telecontrol);
+  // telecontrol.csv is optional — ignore if not found
+  if (!tc_result.is_ok()) {
+    OPENEMS_LOG_D("ConfigLoader", "telecontrol.csv not found or empty — skipping");
+  }
+
+  auto st_result = load_point_table("setting.csv", common::PointCategory::Setting);
+  // setting.csv is optional — ignore if not found
+  if (!st_result.is_ok()) {
+    OPENEMS_LOG_D("ConfigLoader", "setting.csv not found or empty — skipping");
+  }
+
   // 5. Read modbus_mapping.csv
   auto mb_result = parse_csv_file(csv_path("modbus_mapping.csv"));
   if (!mb_result.is_ok()) return common::Result<EmsConfig>::Err(mb_result.error_code(), mb_result.error_msg());

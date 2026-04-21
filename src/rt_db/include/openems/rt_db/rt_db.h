@@ -27,6 +27,16 @@ struct TeleindicationReadResult {
   bool valid;
 };
 
+// Command read result
+struct CommandReadResult {
+  double   desired_value;
+  double   result_value;
+  uint64_t submit_time;
+  uint64_t complete_time;
+  CommandStatus status;
+  uint8_t error_code;
+};
+
 // Snapshot of all telemetry values
 struct TelemetrySnapshot {
   std::vector<TelemetryReadResult> values;
@@ -44,7 +54,7 @@ struct SiteSnapshot {
   uint64_t snapshot_time = 0;  // epoch ms
   std::vector<std::string> point_ids;
   std::vector<std::string> device_ids;
-  std::vector<uint8_t> point_categories;  // 0=telemetry, 1=teleindication
+  std::vector<uint8_t> point_categories;  // 0=telemetry, 1=teleindication, 2=telecontrol, 3=setting
   std::vector<double> telemetry_values;
   std::vector<uint16_t> teleindication_values;
   std::vector<common::Quality> qualities;
@@ -58,7 +68,8 @@ public:
   // Create shared memory region (collector process)
   static common::Result<RtDb*> create(const std::string& shm_name,
                                        uint32_t telemetry_count,
-                                       uint32_t teleindication_count);
+                                       uint32_t teleindication_count,
+                                       uint32_t command_count);
 
   // Attach to existing shared memory (other processes)
   static common::Result<RtDb*> attach(const std::string& shm_name);
@@ -72,9 +83,13 @@ public:
                                     const common::DeviceId& did,
                                     uint8_t point_category,
                                     uint8_t data_type,
-                                    const std::string& unit);
+                                    const std::string& unit,
+                                    bool writable = false);
 
-  // Write telemetry value
+  // Register a command slot for a writable point
+  common::VoidResult register_command_point(const common::PointId& pid);
+
+  // Write telemetry value (categories 0, 2, 3)
   void write_telemetry(const common::PointId& pid,
                        double value,
                        common::Quality quality,
@@ -96,6 +111,24 @@ public:
                                   const std::vector<uint16_t>& state_codes,
                                   const std::vector<common::Quality>& qualities);
 
+  // ---- Command API (cross-process command delivery) ----
+
+  // Submit a command: sets slot to Pending with desired_value
+  common::VoidResult submit_command(const common::PointId& pid, double desired_value);
+
+  // Read next pending command (for collector ControlService)
+  // Returns true if a pending command was found
+  bool read_pending_command(common::PointId& out_pid, double& out_value);
+
+  // Complete a command: set status and result
+  void complete_command(const common::PointId& pid,
+                        CommandStatus status,
+                        double result_value,
+                        uint8_t error_code);
+
+  // Read command status for a point
+  common::Result<CommandReadResult> read_command_status(const common::PointId& pid);
+
   // ---- Read API (all processes) ----
 
   common::Result<TelemetryReadResult> read_telemetry(const common::PointId& pid);
@@ -109,6 +142,7 @@ public:
   uint32_t telemetry_count() const;
   uint32_t teleindication_count() const;
   uint32_t total_point_count() const;
+  uint32_t command_count() const;
   uint64_t update_sequence() const;
   bool is_creator() const { return is_creator_; }
 
@@ -125,6 +159,9 @@ private:
   // Find point index by PointId
   int32_t find_point_index(const common::PointId& pid) const;
 
+  // Find command slot index by PointId
+  int32_t find_command_slot(const common::PointId& pid) const;
+
   std::string shm_name_;
   bool is_creator_;
 
@@ -139,6 +176,7 @@ private:
   PointIndexEntry* index_table_ = nullptr;
   TelemetrySlot* telemetry_slots_ = nullptr;
   TeleindicationSlot* teleindication_slots_ = nullptr;
+  CommandSlot* command_slots_ = nullptr;
 
   // Lock for in-process access to the shared memory
   // Cross-process locking is handled via update_seq (seqlock pattern)

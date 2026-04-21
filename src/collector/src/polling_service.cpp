@@ -20,7 +20,12 @@ DevicePollTask::build_register_groups() const {
   std::unordered_map<uint8_t, std::vector<model::PointPtr>> by_fc;
   for (auto& pt : device_->points()) {
     if (pt->has_modbus_mapping()) {
-      by_fc[pt->modbus_mapping().function_code].push_back(pt);
+      // Translate write FCs to read-back FCs for polling
+      uint8_t fc = pt->modbus_mapping().function_code;
+      if (fc == 5)  fc = 1;   // WriteSingleCoil → ReadCoils
+      if (fc == 6)  fc = 3;   // WriteSingleRegister → ReadHolding
+      if (fc == 16) fc = 3;   // WriteMultipleRegisters → ReadHolding
+      by_fc[fc].push_back(pt);
     }
   }
 

@@ -112,7 +112,7 @@ int main(int argc, char* argv[]) {
     OPENEMS_LOG_I("IEC104Collector", "Attached to existing RtDb");
   } else {
     // Create new if not exists
-    auto create_result = openems::rt_db::RtDb::create(shm_name, telem, ti);
+    auto create_result = openems::rt_db::RtDb::create(shm_name, telem, ti, 0);
     if (!create_result.is_ok()) {
       OPENEMS_LOG_F("IEC104Collector", "RtDb failed: " + create_result.error_msg());
       return 1;

@@ -1,0 +1,2 @@
+id,device_id,name,code,data_type,unit,writable
+bess-start-stop,bess-001,Start/Stop,BESS_START_STOP,bool,,true

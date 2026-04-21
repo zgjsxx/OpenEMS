@@ -3,6 +3,8 @@
 Reads the named shared memory 'Global\\openems_rt_db' created by
 openems-modbus-collector, using the same fixed layout defined in
 rt_db_layout.h.
+
+Also supports command slot operations for telecontrol/setting write operations.
 """
 
 import ctypes
@@ -51,11 +53,13 @@ class ShmHeader(ctypes.Structure):
         ("index_table_offset",     ctypes.c_uint32),
         ("telemetry_offset",       ctypes.c_uint32),
         ("teleindication_offset",  ctypes.c_uint32),
+        ("command_count",          ctypes.c_uint32),
+        ("command_offset",         ctypes.c_uint32),
         ("last_update_time",       ctypes.c_uint64),
         ("update_seq",             ctypes.c_uint64),
         ("site_id",                ctypes.c_char * 32),
         ("site_name",              ctypes.c_char * 64),
-        ("reserved",               ctypes.c_uint32 * 4),
+        ("reserved",               ctypes.c_uint32 * 2),
     ]
 
 
@@ -65,6 +69,8 @@ class PointIndexEntry(ctypes.Structure):
         ("device_id",     ctypes.c_char * 32),
         ("point_category", ctypes.c_uint8),
         ("data_type",     ctypes.c_uint8),
+        ("writable",      ctypes.c_uint8),
+        ("reserved1",     ctypes.c_uint8),
         ("slot_offset",   ctypes.c_uint32),
         ("unit",          ctypes.c_char * 8),
     ]
@@ -90,11 +96,26 @@ class TeleindicationSlot(ctypes.Structure):
     ]
 
 
+class CommandSlot(ctypes.Structure):
+    _fields_ = [
+        ("point_id",       ctypes.c_char * 32),
+        ("reserved1",      ctypes.c_char * 8),
+        ("desired_value",  ctypes.c_double),
+        ("result_value",   ctypes.c_double),
+        ("submit_time",    ctypes.c_uint64),
+        ("complete_time",  ctypes.c_uint64),
+        ("status",         ctypes.c_uint8),
+        ("error_code",     ctypes.c_uint8),
+        ("reserved2",      ctypes.c_char * 6),
+    ]
+
+
 K_MAGIC = 0x454D5300
-K_VERSION = 1
+K_VERSION = 2
 
 QUALITY_MAP = {0: "Good", 1: "Questionable", 2: "Bad", 3: "Invalid"}
-CATEGORY_MAP = {0: "telemetry", 1: "teleindication"}
+CATEGORY_MAP = {0: "telemetry", 1: "teleindication", 2: "telecontrol", 3: "setting"}
+COMMAND_STATUS_MAP = {0: "Pending", 1: "Executing", 2: "Success", 3: "Failed", 4: "Idle"}
 
 
 # ── Shared memory reader ────────────────────────────────────────────
@@ -133,6 +154,7 @@ class ShmReader:
             + hdr.total_point_count * ctypes.sizeof(PointIndexEntry)
             + hdr.telemetry_count * ctypes.sizeof(TelemetrySlot)
             + hdr.teleindication_count * ctypes.sizeof(TeleindicationSlot)
+            + hdr.command_count * ctypes.sizeof(CommandSlot)
         )
         UnmapViewOfFile(hdr_addr)
 
@@ -173,6 +195,12 @@ class ShmReader:
         addr = self.base_addr + self.header.teleindication_offset
         return (TeleindicationSlot * self.header.teleindication_count).from_address(addr)
 
+    def _command_slots(self) -> ctypes.Array:
+        if self.header.command_count == 0 or self.header.command_offset == 0:
+            return (CommandSlot * 0)()
+        addr = self.base_addr + self.header.command_offset
+        return (CommandSlot * self.header.command_count).from_address(addr)
+
     def read_snapshot(self) -> dict:
         """Read a consistent snapshot using seqlock pattern (matching C++ code)."""
         if not self._attached:
@@ -201,8 +229,9 @@ class ShmReader:
                 did = entry.device_id.decode("ascii").rstrip("\x00")
                 cat = entry.point_category
                 unit = entry.unit.decode("ascii").rstrip("\x00")
+                writable = entry.writable
 
-                if cat == 0:  # telemetry
+                if cat == 0 or cat == 2 or cat == 3:  # telemetry / telecontrol / setting
                     slot = telem_slots[telem_idx]
                     ts_ms = slot.timestamp
                     ts_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
@@ -216,6 +245,7 @@ class ShmReader:
                         "unit": unit,
                         "quality": QUALITY_MAP.get(slot.quality, "Unknown"),
                         "valid": bool(slot.valid),
+                        "writable": bool(writable),
                         "timestamp": ts_ms,
                         "timestamp_str": ts_str,
                     })
@@ -234,6 +264,7 @@ class ShmReader:
                         "unit": unit,
                         "quality": QUALITY_MAP.get(slot.quality, "Unknown"),
                         "valid": bool(slot.valid),
+                        "writable": bool(writable),
                         "timestamp": ts_ms,
                         "timestamp_str": ts_str,
                     })
@@ -257,6 +288,7 @@ class ShmReader:
                     "last_update_str": last_update_str,
                     "telemetry_count": self.header.telemetry_count,
                     "teleindication_count": self.header.teleindication_count,
+                    "command_count": self.header.command_count,
                     "points": points,
                 }
 
@@ -265,3 +297,47 @@ class ShmReader:
 
         # Failed after retries
         return {"error": "seqlock retry failed", "points": []}
+
+    def submit_command(self, pid: str, desired_value: float) -> dict:
+        """Submit a command to a writable point's command slot."""
+        if not self._attached:
+            return {"error": "not attached"}
+
+        cmd_slots = self._command_slots()
+        for i in range(self.header.command_count):
+            slot = cmd_slots[i]
+            slot_pid = slot.point_id.decode("ascii").rstrip("\x00")
+            if slot_pid == pid:
+                # Write directly to the command slot
+                slot.desired_value = desired_value
+                slot.submit_time = int(time.time() * 1000)
+                slot.status = 0  # CommandPending
+                slot.error_code = 0
+                slot.result_value = 0.0
+                slot.complete_time = 0
+                return {"status": "submitted", "point_id": pid, "desired_value": desired_value}
+
+        return {"error": "command slot not found for point: " + pid}
+
+    def read_command_status(self, pid: str) -> dict:
+        """Read the command status for a point."""
+        if not self._attached:
+            return {"error": "not attached"}
+
+        cmd_slots = self._command_slots()
+        for i in range(self.header.command_count):
+            slot = cmd_slots[i]
+            slot_pid = slot.point_id.decode("ascii").rstrip("\x00")
+            if slot_pid == pid:
+                return {
+                    "point_id": pid,
+                    "desired_value": slot.desired_value,
+                    "result_value": slot.result_value,
+                    "submit_time": slot.submit_time,
+                    "complete_time": slot.complete_time,
+                    "status": COMMAND_STATUS_MAP.get(slot.status, "Unknown"),
+                    "status_code": slot.status,
+                    "error_code": slot.error_code,
+                }
+
+        return {"error": "command slot not found for point: " + pid}
