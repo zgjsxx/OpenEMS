@@ -1,6 +1,6 @@
 """Shared memory reader for OpenEMS RtDb via Win32 ctypes.
 
-Reads the named shared memory 'Global\\openems_rt_db' created by
+Reads the named shared memory 'Local\\openems_rt_db' created by
 openems-modbus-collector, using the same fixed layout defined in
 rt_db_layout.h.
 
@@ -123,7 +123,7 @@ COMMAND_STATUS_MAP = {0: "Pending", 1: "Executing", 2: "Success", 3: "Failed", 4
 class ShmReader:
     """Attaches to OpenEMS RtDb shared memory and reads snapshots."""
 
-    def __init__(self, shm_name: str = "Global\\openems_rt_db"):
+    def __init__(self, shm_name: str = "Local\\openems_rt_db"):
         self.shm_name = shm_name
         self.handle: ctypes.wintypes.HANDLE = None
         self.base_addr: ctypes.c_void_p = None

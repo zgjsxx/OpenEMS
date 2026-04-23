@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  std::string shm_name = "Global\\openems_rt_db";
+  std::string shm_name = "Local\\openems_rt_db";
   if (argc > 1) shm_name = argv[1];
 
   OPENEMS_LOG_I("Viewer", "Attaching to RtDb: " + shm_name);

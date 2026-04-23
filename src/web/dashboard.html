@@ -44,6 +44,26 @@
     font-size: 14px; color: var(--text-muted);
   }
   .site-header .site-info span { margin-left: 12px; }
+  .site-header .header-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .site-header .header-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid rgba(79,195,247,0.35);
+    border-radius: 999px;
+    padding: 7px 12px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .site-header .header-link:hover {
+    background: rgba(79,195,247,0.12);
+    border-color: rgba(79,195,247,0.6);
+  }
   /* Status bar */
   .status-bar {
     background: var(--card-bg);
@@ -59,6 +79,65 @@
   .conn-dot.err { background: var(--bad); }
   .conn-dot.wait { background: var(--questionable); animation: pulse 1s infinite; }
   @keyframes pulse { 50% { opacity: 0.3; } }
+  /* Active alarms */
+  .alarm-panel {
+    margin: 12px 24px 0;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    max-width: 760px;
+  }
+  .alarm-panel-header {
+    background: #2c3040;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+  }
+  .alarm-panel-title {
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .alarm-count {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .alarm-empty {
+    padding: 12px 14px;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+  .alarm-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .alarm-row {
+    display: grid;
+    grid-template-columns: 86px 150px 1fr 96px 150px;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 14px;
+    border-bottom: 1px solid #2a2e36;
+    font-size: 12px;
+  }
+  .alarm-row:last-child { border-bottom: none; }
+  .alarm-level {
+    justify-self: start;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .alarm-level.warning { background: rgba(255,152,0,0.2); color: var(--questionable); }
+  .alarm-level.critical { background: rgba(244,67,54,0.22); color: var(--bad); }
+  .alarm-point { color: var(--accent); font-weight: 600; }
+  .alarm-msg { color: var(--text); }
+  .alarm-value, .alarm-time {
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
   /* Main grid */
   .main-grid {
     padding: 20px 24px;
@@ -230,6 +309,10 @@
     <span id="site-id"></span>
     <span id="site-name"></span>
   </div>
+  <div class="header-actions">
+    <a class="header-link" href="/history">History</a>
+    <a class="header-link" href="/config">Config Console</a>
+  </div>
 </div>
 
 <div class="status-bar">
@@ -239,6 +322,14 @@
   <span>Seq: <strong id="seq-num">-</strong></span>
   <span>|</span>
   <span>Last update: <strong id="last-update">-</strong></span>
+</div>
+
+<div class="alarm-panel">
+  <div class="alarm-panel-header">
+    <span class="alarm-panel-title">Active Alarms</span>
+    <span class="alarm-count" id="alarm-count">0 active</span>
+  </div>
+  <div id="alarm-body" class="alarm-empty">无活动告警</div>
 </div>
 
 <div class="error-overlay" id="error-overlay"></div>
@@ -421,6 +512,56 @@ function formatValue(v) {
   return v.toFixed(4);
 }
 
+function formatAlarmValue(alarm) {
+  if (typeof alarm.value !== "number") return "-";
+  const value = formatValue(alarm.value);
+  return alarm.unit ? `${value} ${alarm.unit}` : value;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function renderAlarms(data) {
+  const countEl = document.getElementById("alarm-count");
+  const bodyEl = document.getElementById("alarm-body");
+  const alarms = Array.isArray(data && data.alarms) ? data.alarms : [];
+
+  countEl.textContent = `${alarms.length} active`;
+  if (alarms.length === 0) {
+    bodyEl.className = "alarm-empty";
+    bodyEl.textContent = data && data.error ? "告警文件暂不可读" : "无活动告警";
+    return;
+  }
+
+  bodyEl.className = "alarm-list";
+  bodyEl.innerHTML = alarms.map((alarm) => {
+    const level = alarm.level || "warning";
+    return `<div class="alarm-row">
+      <span class="alarm-level ${escapeHtml(level)}">${escapeHtml(level)}</span>
+      <span class="alarm-point">${escapeHtml(alarm.point_id || "-")}</span>
+      <span class="alarm-msg">${escapeHtml(alarm.message || "-")}</span>
+      <span class="alarm-value">${escapeHtml(formatAlarmValue(alarm))}</span>
+      <span class="alarm-time">${formatDateTime(alarm.trigger_time)}</span>
+    </div>`;
+  }).join("");
+}
+
+async function refreshAlarms() {
+  try {
+    const resp = await fetch("/api/alarms/active");
+    const data = await resp.json();
+    renderAlarms(data);
+  } catch (e) {
+    renderAlarms({ error: e.message, alarms: [] });
+  }
+}
+
 async function submitCommand(pointId) {
   const input = document.getElementById("cmd-input-" + pointId);
   if (!input) return;
@@ -548,8 +689,12 @@ async function loadConfig() {
 
 // Start polling
 refresh();
+refreshAlarms();
 loadConfig();
-setInterval(refresh, REFRESH_MS);
+setInterval(() => {
+  refresh();
+  refreshAlarms();
+}, REFRESH_MS);
 </script>
 </body>
 </html>

@@ -17,8 +17,18 @@
 
 namespace openems::iec104 {
 
-// Callback when ASDU data is received — caller maps type_id+ioa to RtDb write
-using AsduCallback = std::function<void(const AsduData&)>;
+// Decoded point update produced from a registered IEC104 mapping.
+
+struct PointUpdate {
+  common::PointId point_id;
+  common::PointCategory category;
+  double value = 0.0;
+  common::Quality quality = common::Quality::Good;
+  bool valid = false;
+};
+
+// Callback when a registered point is decoded from an ASDU.
+using AsduCallback = std::function<void(const PointUpdate&)>;
 
 class Iec104Client {
 public:

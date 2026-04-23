@@ -21,6 +21,9 @@
 
 #include <cstring>
 #include <chrono>
+#include <cerrno>
+#include <sstream>
+#include <iomanip>
 
 namespace openems::iec104 {
 
@@ -33,6 +36,43 @@ void Iec104Client::ensure_wsa_init() {
 
 static uint64_t make_dispatch_key(uint8_t type_id, uint32_t ioa) {
   return (static_cast<uint64_t>(type_id) << 24) | ioa;
+}
+
+static std::string bytes_to_hex(const uint8_t* data, size_t len) {
+  std::ostringstream oss;
+  oss << std::hex << std::uppercase << std::setfill('0');
+  for (size_t i = 0; i < len; ++i) {
+    if (i > 0) oss << ' ';
+    oss << std::setw(2) << static_cast<int>(data[i]);
+  }
+  return oss.str();
+}
+
+static std::string bytes_to_hex(const std::vector<uint8_t>& data) {
+  return bytes_to_hex(data.data(), data.size());
+}
+
+static bool is_socket_timeout_error() {
+#ifdef _WIN32
+  int err = WSAGetLastError();
+  return err == WSAETIMEDOUT;
+#else
+  return errno == EAGAIN || errno == EWOULDBLOCK;
+#endif
+}
+
+static std::string frame_type_to_string(FrameType type) {
+  switch (type) {
+    case FrameType::I: return "I";
+    case FrameType::S: return "S";
+    case FrameType::U_StartdtAct: return "U_STARTDT_ACT";
+    case FrameType::U_StartdtCon: return "U_STARTDT_CON";
+    case FrameType::U_StopdtAct: return "U_STOPDT_ACT";
+    case FrameType::U_StopdtCon: return "U_STOPDT_CON";
+    case FrameType::U_TestfrAct: return "U_TESTFR_ACT";
+    case FrameType::U_TestfrCon: return "U_TESTFR_CON";
+    default: return "UNKNOWN";
+  }
 }
 
 Iec104Client::Iec104Client(const Iec104Config& config) : config_(config) {
@@ -159,6 +199,8 @@ void Iec104Client::stop() {
 void Iec104Client::send_frame(const std::vector<uint8_t>& frame) {
   std::lock_guard lock(socket_mutex_);
   if (socket_fd_ == -1) return;
+  OPENEMS_LOG_I("Iec104Client",
+      "TX[" + std::to_string(frame.size()) + "]: " + bytes_to_hex(frame));
   ::send(static_cast<SocketType>(socket_fd_),
       reinterpret_cast<const char*>(frame.data()),
       static_cast<int>(frame.size()), 0);
@@ -173,13 +215,30 @@ common::Result<std::vector<uint8_t>> Iec104Client::receive_apdu() {
 
   // Read start byte (0x68) and length
   uint8_t header[2];
+  OPENEMS_LOG_D("Iec104Client", "RX waiting for IEC104 header");
   int r1 = ::recv(static_cast<SocketType>(socket_fd_),
       reinterpret_cast<char*>(header), 2, MSG_WAITALL);
+  if (r1 == 0) {
+    connected_ = false;
+    return common::Result<std::vector<uint8_t>>::Err(
+        common::ErrorCode::ConnectionClosed, "Peer closed connection while reading header");
+  }
+  if (r1 < 0) {
+    if (is_socket_timeout_error()) {
+      return common::Result<std::vector<uint8_t>>::Err(
+          common::ErrorCode::Timeout, "recv header timeout");
+    }
+    connected_ = false;
+    return common::Result<std::vector<uint8_t>>::Err(
+        common::ErrorCode::ConnectionFailed, "recv header failed");
+  }
   if (r1 != 2) {
     connected_ = false;
     return common::Result<std::vector<uint8_t>>::Err(
-        common::ErrorCode::ModbusTimeout, "recv header failed");
+        common::ErrorCode::ConnectionFailed, "short header read");
   }
+  OPENEMS_LOG_I("Iec104Client",
+      "RX header[" + std::to_string(r1) + "]: " + bytes_to_hex(header, sizeof(header)));
   if (header[0] != 0x68) {
     return common::Result<std::vector<uint8_t>>::Err(
         common::ErrorCode::ModbusInvalidFrame, "Invalid start byte");
@@ -194,10 +253,20 @@ common::Result<std::vector<uint8_t>> Iec104Client::receive_apdu() {
   std::vector<uint8_t> apdu(apdu_len);
   int r2 = ::recv(static_cast<SocketType>(socket_fd_),
       reinterpret_cast<char*>(apdu.data()), apdu_len, MSG_WAITALL);
+  if (r2 == 0) {
+    connected_ = false;
+    return common::Result<std::vector<uint8_t>>::Err(
+        common::ErrorCode::ConnectionClosed, "Peer closed connection while reading APDU body");
+  }
+  if (r2 < 0) {
+    connected_ = false;
+    return common::Result<std::vector<uint8_t>>::Err(
+        common::ErrorCode::ConnectionFailed, "recv APDU body failed");
+  }
   if (r2 != apdu_len) {
     connected_ = false;
     return common::Result<std::vector<uint8_t>>::Err(
-        common::ErrorCode::ModbusTimeout, "recv APDU body failed");
+        common::ErrorCode::ConnectionFailed, "short APDU body read");
   }
 
   // Full frame: start + length + apdu body
@@ -205,6 +274,8 @@ common::Result<std::vector<uint8_t>> Iec104Client::receive_apdu() {
   frame.push_back(header[0]);
   frame.push_back(header[1]);
   frame.insert(frame.end(), apdu.begin(), apdu.end());
+  OPENEMS_LOG_I("Iec104Client",
+      "RX frame[" + std::to_string(frame.size()) + "]: " + bytes_to_hex(frame));
   return common::Result<std::vector<uint8_t>>::Ok(std::move(frame));
 }
 
@@ -253,33 +324,51 @@ void Iec104Client::dispatch_asdu(const AsduData& data) {
     auto key = make_dispatch_key(tid, ioa);
     auto it = point_dispatch_.find(key);
     if (it == point_dispatch_.end()) {
-      continue;  // Unknown point, skip
+      OPENEMS_LOG_D("Iec104Client",
+          "Skip unregistered point: TID=" + std::to_string(tid) +
+          " IOA=" + std::to_string(ioa));
+      continue;
     }
 
     auto& dispatch = it->second;
     double eng_value = 0.0;
     common::Quality quality = common::Quality::Good;
+    bool valid = false;
 
-    if (i < data.sequence_data.size()) {
-      auto& d = data.sequence_data[i];
-      if (std::holds_alternative<SinglePointData>(d)) {
-        eng_value = std::get<SinglePointData>(d).value ? 1.0 : 0.0;
-      } else if (std::holds_alternative<DoublePointData>(d)) {
-        eng_value = static_cast<double>(std::get<DoublePointData>(d).value);
-      } else if (std::holds_alternative<NormalizedValueData>(d)) {
-        eng_value = static_cast<double>(std::get<NormalizedValueData>(d).value) * dispatch.scale;
-      } else if (std::holds_alternative<ScaledValueData>(d)) {
-        eng_value = static_cast<double>(std::get<ScaledValueData>(d).raw) * dispatch.scale;
-      } else if (std::holds_alternative<ShortFloatData>(d)) {
-        eng_value = static_cast<double>(std::get<ShortFloatData>(d).value) * dispatch.scale;
-      }
+    if (i >= data.sequence_data.size()) {
+      OPENEMS_LOG_W("Iec104Client",
+          "Missing ASDU value for registered point: TID=" + std::to_string(tid) +
+          " IOA=" + std::to_string(ioa) +
+          " Point=" + dispatch.point_id);
+      continue;
     }
 
-    // Call external callback (which writes to RtDb)
+    auto& d = data.sequence_data[i];
+    if (std::holds_alternative<SinglePointData>(d)) {
+      eng_value = std::get<SinglePointData>(d).value ? 1.0 : 0.0;
+      valid = true;
+    } else if (std::holds_alternative<DoublePointData>(d)) {
+      eng_value = static_cast<double>(std::get<DoublePointData>(d).value);
+      valid = true;
+    } else if (std::holds_alternative<NormalizedValueData>(d)) {
+      eng_value = static_cast<double>(std::get<NormalizedValueData>(d).value) * dispatch.scale;
+      valid = true;
+    } else if (std::holds_alternative<ScaledValueData>(d)) {
+      eng_value = static_cast<double>(std::get<ScaledValueData>(d).raw) * dispatch.scale;
+      valid = true;
+    } else if (std::holds_alternative<ShortFloatData>(d)) {
+      eng_value = static_cast<double>(std::get<ShortFloatData>(d).value) * dispatch.scale;
+      valid = true;
+    } else {
+      OPENEMS_LOG_W("Iec104Client",
+          "Unsupported ASDU value type for point " + dispatch.point_id +
+          " TID=" + std::to_string(tid) +
+          " IOA=" + std::to_string(ioa));
+      continue;
+    }
+
     if (asdu_cb_) {
-      // We pass the parsed data through callback
-      // The callback knows how to write to RtDb based on category
-      asdu_cb_(data);
+      asdu_cb_(PointUpdate{dispatch.point_id, dispatch.category, eng_value, quality, valid});
     }
 
     OPENEMS_LOG_D("Iec104Client",
@@ -295,6 +384,10 @@ void Iec104Client::receive_thread_func() {
   while (running_.load() && connected_.load()) {
     auto frame_result = receive_apdu();
     if (!frame_result.is_ok()) {
+      if (frame_result.error_code() == common::ErrorCode::Timeout) {
+        OPENEMS_LOG_D("Iec104Client", "Receive idle timeout");
+        continue;
+      }
       OPENEMS_LOG_W("Iec104Client", "Receive failed: " + frame_result.error_msg());
       // Try reconnect
       auto rc = reconnect();
@@ -310,6 +403,8 @@ void Iec104Client::receive_thread_func() {
 
     // Control field starts at offset 2
     auto type = detect_frame_type(frame.data() + 2);
+    OPENEMS_LOG_I("Iec104Client",
+        "RX frame type: " + frame_type_to_string(type));
 
     if (type == FrameType::I) {
       // I-frame: ctrl(4 bytes) + ASDU

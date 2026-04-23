@@ -4,8 +4,27 @@
 #include "openems/utils/logger.h"
 #include "openems/utils/time_utils.h"
 #include <algorithm>
+#include <sstream>
 
 namespace openems::collector {
+
+static std::string join_registers(const std::vector<uint16_t>& values) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) oss << ", ";
+    oss << values[i];
+  }
+  return oss.str();
+}
+
+static std::string join_bits(const std::vector<bool>& values) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) oss << ", ";
+    oss << (values[i] ? "1" : "0");
+  }
+  return oss.str();
+}
 
 DevicePollTask::DevicePollTask(
     model::DevicePtr device,
@@ -92,6 +111,21 @@ common::VoidResult DevicePollTask::poll_register_group(const RegisterGroup& grou
   }
 
   auto& modbus_result = read_result.value();
+  if (group.function_code <= 2) {
+    OPENEMS_LOG_I("PollTask",
+        "Raw bits device=" + device_->id() +
+        " FC=" + std::to_string(group.function_code) +
+        " addr=" + std::to_string(group.start_address) +
+        " count=" + std::to_string(group.count) +
+        " values=[" + join_bits(modbus_result.coils) + "]");
+  } else {
+    OPENEMS_LOG_I("PollTask",
+        "Raw registers device=" + device_->id() +
+        " FC=" + std::to_string(group.function_code) +
+        " addr=" + std::to_string(group.start_address) +
+        " count=" + std::to_string(group.count) +
+        " values=[" + join_registers(modbus_result.registers) + "]");
+  }
 
   for (auto& pt : group.points) {
     auto& mapping = pt->modbus_mapping();
@@ -107,6 +141,12 @@ common::VoidResult DevicePollTask::poll_register_group(const RegisterGroup& grou
       if (parse_result.is_ok()) {
         eng_value = modbus::ModbusDataParser::apply_scaling(
             parse_result.value(), mapping.scale, mapping.offset);
+        OPENEMS_LOG_I("PollTask",
+            "Point decode device=" + device_->id() +
+            " point=" + pt->id() +
+            " raw_bits=[" + join_bits(modbus_result.coils) + "]" +
+            " offset=" + std::to_string(offset) +
+            " eng=" + std::to_string(eng_value));
       } else {
         quality = common::Quality::Bad;
         valid = false;
@@ -119,6 +159,12 @@ common::VoidResult DevicePollTask::poll_register_group(const RegisterGroup& grou
       if (parse_result.is_ok()) {
         eng_value = modbus::ModbusDataParser::apply_scaling(
             parse_result.value(), mapping.scale, mapping.offset);
+        OPENEMS_LOG_I("PollTask",
+            "Point decode device=" + device_->id() +
+            " point=" + pt->id() +
+            " raw_regs=[" + join_registers(sub_regs) + "]" +
+            " offset=" + std::to_string(offset) +
+            " eng=" + std::to_string(eng_value));
       } else {
         quality = common::Quality::Bad;
         valid = false;

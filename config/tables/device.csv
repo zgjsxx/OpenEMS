@@ -1,4 +1,4 @@
 id,site_id,name,type,protocol,ip,port,unit_id,poll_interval_ms,common_address
 pv-001,site-demo-001,PV Inverter #1,PV,modbus-tcp,127.0.0.1,502,1,1000,
 #bess-001,site-demo-001,BESS #1,BESS,modbus-tcp,127.0.0.1,5021,1,500,
-#grid-001,site-demo-001,Grid Relay #1,Grid,iec104,192.168.1.100,2404,1,1000,1
+grid-001,site-demo-001,Grid Relay #1,Grid,iec104,127.0.0.1,2404,1,1000,1

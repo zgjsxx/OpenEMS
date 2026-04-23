@@ -8,7 +8,7 @@ import uvicorn
 
 def main():
     port = 8080
-    shm_name = "Global\\openems_rt_db"
+    shm_name = "Local\\openems_rt_db"
 
     i = 1
     while i < len(sys.argv):

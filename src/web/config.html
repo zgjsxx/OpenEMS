@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Config Console</title>
+<style>
+  :root {
+    --bg: #14181f;
+    --panel: #1d2330;
+    --panel-alt: #252c3a;
+    --border: #394254;
+    --text: #e7edf7;
+    --muted: #95a1b5;
+    --accent: #50c1ff;
+    --accent-2: #2d8ecf;
+    --danger: #ef5350;
+    --warn: #ffb74d;
+    --success: #66bb6a;
+    --input: #111723;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: linear-gradient(180deg, #0d1117 0%, #14181f 100%);
+    color: var(--text);
+  }
+  .page {
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+  .title-block h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    color: var(--accent);
+  }
+  .title-block p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .top-links a {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 14px;
+  }
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  button {
+    border: none;
+    background: var(--accent);
+    color: white;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+  }
+  button.danger {
+    background: var(--danger);
+  }
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .status-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    align-items: center;
+    background: rgba(29, 35, 48, 0.9);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 18px;
+  }
+  .status-item strong {
+    color: var(--text);
+  }
+  .dirty-yes { color: var(--warn); }
+  .dirty-no { color: var(--success); }
+  .notice, .errors {
+    background: rgba(29, 35, 48, 0.96);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+  }
+  .notice { color: var(--muted); }
+  .notice.success { border-color: rgba(102, 187, 106, 0.5); color: #c8e6c9; }
+  .notice.error, .errors { border-color: rgba(239, 83, 80, 0.5); color: #ffcdd2; }
+  .errors h3 {
+    margin: 0 0 12px;
+    font-size: 16px;
+  }
+  .errors ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .tab-btn {
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .tab-btn.active {
+    background: linear-gradient(180deg, var(--accent) 0%, var(--accent-2) 100%);
+    border-color: transparent;
+  }
+  .table-card {
+    background: rgba(29, 35, 48, 0.96);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+  }
+  .table-card h2 {
+    margin: 0 0 6px;
+    font-size: 22px;
+  }
+  .table-card p {
+    margin: 0 0 16px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .table-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .data-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 980px;
+    background: #131926;
+  }
+  th, td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #2a3242;
+    vertical-align: top;
+  }
+  th {
+    background: #1f2736;
+    color: #c6d5eb;
+    font-size: 13px;
+    text-align: left;
+    position: sticky;
+    top: 0;
+  }
+  td.actions {
+    width: 88px;
+    text-align: right;
+  }
+  input, select {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--input);
+    color: var(--text);
+    padding: 8px 10px;
+    font: inherit;
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 8px;
+  }
+  .empty {
+    padding: 18px;
+    color: var(--muted);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="topbar">
+    <div class="title-block">
+      <h1>OpenEMS Config Console</h1>
+      <p>通过浏览器编辑 CSV 配置。保存成功后需要重启对应采集进程才能生效。</p>
+    </div>
+    <div class="top-links">
+      <a href="/">返回 Dashboard</a>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button id="reload-btn" class="secondary">重新加载</button>
+    <button id="validate-btn" class="secondary">校验配置</button>
+    <button id="save-btn">保存 CSV</button>
+  </div>
+
+  <div class="status-strip">
+    <div class="status-item">未保存修改: <strong id="dirty-flag" class="dirty-no">否</strong></div>
+    <div class="status-item">当前页签: <strong id="active-tab-label">-</strong></div>
+    <div class="status-item">上次操作: <strong id="last-action">未执行</strong></div>
+  </div>
+
+  <div id="notice-box" class="notice" hidden></div>
+  <div id="errors-box" class="errors" hidden></div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="table-card">
+    <h2 id="table-title">Loading...</h2>
+    <p id="table-desc">正在加载配置模型...</p>
+    <div class="table-actions" id="table-actions"></div>
+    <div class="data-table-wrap" id="table-wrap"></div>
+    <div class="hint" id="table-hint"></div>
+  </div>
+</div>
+
+<script>
+const state = {
+  schema: [],
+  tables: {},
+  activeTab: null,
+  dirty: false,
+};
+
+function setNotice(message, kind = "info") {
+  const box = document.getElementById("notice-box");
+  if (!message) {
+    box.hidden = true;
+    box.textContent = "";
+    box.className = "notice";
+    return;
+  }
+  box.hidden = false;
+  box.className = `notice ${kind === "success" ? "success" : kind === "error" ? "error" : ""}`.trim();
+  box.textContent = message;
+}
+
+function setErrors(errors) {
+  const box = document.getElementById("errors-box");
+  if (!errors || errors.length === 0) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+
+  const items = errors.map((error) => {
+    const rowText = Number.isInteger(error.row) ? ` 第 ${error.row + 1} 行` : "";
+    const colText = error.column ? ` / 字段 ${error.column}` : "";
+    return `<li>[${error.table}]${rowText}${colText}: ${escapeHtml(error.message)}</li>`;
+  }).join("");
+
+  box.hidden = false;
+  box.innerHTML = `<h3>校验失败</h3><ul>${items}</ul>`;
+}
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function markDirty(value) {
+  state.dirty = value;
+  document.getElementById("dirty-flag").textContent = value ? "是" : "否";
+  document.getElementById("dirty-flag").className = value ? "dirty-yes" : "dirty-no";
+}
+
+function schemaFor(name) {
+  return state.schema.find((table) => table.name === name);
+}
+
+function emptyRow(table) {
+  const row = {};
+  for (const column of table.columns) {
+    if (column.name === "writable") {
+      row[column.name] = "false";
+    } else if (column.options && column.options.length > 0 && table.single_row) {
+      row[column.name] = column.options[0];
+    } else {
+      row[column.name] = "";
+    }
+  }
+  return row;
+}
+
+function deviceIds() {
+  return (state.tables.device || []).map((row) => row.id).filter(Boolean);
+}
+
+function pointRows() {
+  const tables = ["telemetry", "teleindication", "telecontrol", "teleadjust"];
+  return tables.flatMap((name) => (state.tables[name] || []).map((row) => ({ table: name, row })));
+}
+
+function pointIdsByProtocol(protocol) {
+  const protocols = {};
+  for (const device of state.tables.device || []) {
+    protocols[device.id] = device.protocol;
+  }
+  return pointRows()
+    .filter(({ row }) => row.id && protocols[row.device_id] === protocol)
+    .map(({ row }) => row.id);
+}
+
+function dynamicOptions(column, currentValue) {
+  let options = [];
+  if (column.options) {
+    options = [...column.options];
+  } else if (column.dynamic_options === "device_ids") {
+    options = deviceIds();
+  } else if (column.dynamic_options === "modbus_point_ids") {
+    options = pointIdsByProtocol("modbus-tcp");
+  } else if (column.dynamic_options === "iec104_point_ids") {
+    options = pointIdsByProtocol("iec104");
+  }
+
+  if (currentValue && !options.includes(currentValue)) {
+    options.unshift(currentValue);
+  }
+  return options;
+}
+
+function renderTabs() {
+  const container = document.getElementById("tabs");
+  container.innerHTML = "";
+  for (const table of state.schema) {
+    const button = document.createElement("button");
+    button.className = `tab-btn ${state.activeTab === table.name ? "active" : ""}`.trim();
+    button.textContent = table.title;
+    button.onclick = () => {
+      state.activeTab = table.name;
+      document.getElementById("active-tab-label").textContent = table.title;
+      renderTabs();
+      renderTable();
+    };
+    container.appendChild(button);
+  }
+}
+
+function renderTable() {
+  const table = schemaFor(state.activeTab);
+  if (!table) {
+    return;
+  }
+
+  const title = document.getElementById("table-title");
+  const desc = document.getElementById("table-desc");
+  const wrap = document.getElementById("table-wrap");
+  const actions = document.getElementById("table-actions");
+  const hint = document.getElementById("table-hint");
+
+  title.textContent = table.title;
+  desc.textContent = table.single_row
+    ? "单行配置，直接编辑并保存。"
+    : "行内编辑，支持新增和删除。";
+  hint.textContent = table.optional
+    ? "这是可选表，留空时会保存成只有表头的 CSV。"
+    : "保存前会执行跨表校验，失败时不会写入任何 CSV。";
+
+  if (!state.tables[table.name]) {
+    state.tables[table.name] = [];
+  }
+  if (table.single_row && state.tables[table.name].length === 0) {
+    state.tables[table.name] = [emptyRow(table)];
+  }
+
+  actions.innerHTML = "";
+  if (!table.single_row) {
+    const addBtn = document.createElement("button");
+    addBtn.className = "secondary";
+    addBtn.textContent = `新增 ${table.title} 行`;
+    addBtn.onclick = () => {
+      state.tables[table.name].push(emptyRow(table));
+      markDirty(true);
+      renderTable();
+    };
+    actions.appendChild(addBtn);
+  }
+
+  const rows = state.tables[table.name];
+  if (!rows || rows.length === 0) {
+    wrap.innerHTML = `<div class="empty">当前没有数据行。</div>`;
+    return;
+  }
+
+  let html = "<table><thead><tr>";
+  for (const column of table.columns) {
+    html += `<th>${escapeHtml(column.label)}</th>`;
+  }
+  if (!table.single_row) {
+    html += "<th>操作</th>";
+  }
+  html += "</tr></thead><tbody>";
+
+  rows.forEach((row, rowIndex) => {
+    html += "<tr>";
+    for (const column of table.columns) {
+      const value = row[column.name] ?? "";
+      if (column.type === "select" || column.dynamic_options) {
+        const options = dynamicOptions(column, value);
+        const optionsHtml = options.map((option) => {
+          const selected = option === value ? "selected" : "";
+          return `<option value="${escapeHtml(option)}" ${selected}>${escapeHtml(option)}</option>`;
+        }).join("");
+        html += `<td><select data-table="${table.name}" data-row="${rowIndex}" data-column="${column.name}">${optionsHtml}</select></td>`;
+      } else {
+        const inputType = column.type === "number" ? "number" : "text";
+        html += `<td><input type="${inputType}" value="${escapeHtml(value)}" data-table="${table.name}" data-row="${rowIndex}" data-column="${column.name}"></td>`;
+      }
+    }
+    if (!table.single_row) {
+      html += `<td class="actions"><button class="danger" data-delete-row="${rowIndex}">删除</button></td>`;
+    }
+    html += "</tr>";
+  });
+
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+
+  wrap.querySelectorAll("input, select").forEach((element) => {
+    element.addEventListener("change", (event) => {
+      const tableName = event.target.dataset.table;
+      const rowIndex = Number(event.target.dataset.row);
+      const column = event.target.dataset.column;
+      state.tables[tableName][rowIndex][column] = event.target.value;
+      markDirty(true);
+      if (column === "device_id" || column === "protocol" || column === "id") {
+        renderTable();
+      }
+    });
+  });
+
+  wrap.querySelectorAll("[data-delete-row]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      const rowIndex = Number(event.target.dataset.deleteRow);
+      state.tables[table.name].splice(rowIndex, 1);
+      markDirty(true);
+      renderTable();
+    });
+  });
+}
+
+async function loadAll() {
+  setNotice("正在加载配置...", "info");
+  setErrors([]);
+  const [schemaResp, dataResp] = await Promise.all([
+    fetch("/api/config-editor/schema"),
+    fetch("/api/config-editor/data"),
+  ]);
+  const schemaData = await schemaResp.json();
+  const tableData = await dataResp.json();
+  state.schema = schemaData.tables || [];
+  state.tables = tableData.tables || {};
+  state.activeTab = state.activeTab || (state.schema[0] ? state.schema[0].name : null);
+  markDirty(false);
+  document.getElementById("last-action").textContent = "已加载";
+  document.getElementById("active-tab-label").textContent = schemaFor(state.activeTab)?.title || "-";
+  renderTabs();
+  renderTable();
+  setNotice("配置已加载。", "success");
+}
+
+async function validateConfig() {
+  setNotice("正在校验配置...", "info");
+  setErrors([]);
+  const resp = await fetch("/api/config-editor/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tables: state.tables }),
+  });
+  const data = await resp.json();
+  document.getElementById("last-action").textContent = "已校验";
+  if (!resp.ok) {
+    setNotice("配置校验失败，请先修正错误。", "error");
+    setErrors(data.errors || []);
+    return false;
+  }
+  setNotice("配置校验通过。", "success");
+  return true;
+}
+
+async function saveConfig() {
+  setNotice("正在保存 CSV...", "info");
+  setErrors([]);
+  const resp = await fetch("/api/config-editor/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tables: state.tables }),
+  });
+  const data = await resp.json();
+  document.getElementById("last-action").textContent = "已保存";
+  if (!resp.ok) {
+    setNotice("保存失败，CSV 未写入。", "error");
+    setErrors(data.errors || []);
+    return;
+  }
+  markDirty(false);
+  const restartText = (data.restart_required || []).join(" / ");
+  setNotice(`CSV 已保存。需要重启 ${restartText} 后配置才会生效。`, "success");
+}
+
+document.getElementById("reload-btn").addEventListener("click", () => {
+  loadAll().catch((error) => {
+    setNotice(`加载失败: ${error.message}`, "error");
+  });
+});
+
+document.getElementById("validate-btn").addEventListener("click", () => {
+  validateConfig().catch((error) => {
+    setNotice(`校验失败: ${error.message}`, "error");
+  });
+});
+
+document.getElementById("save-btn").addEventListener("click", async () => {
+  try {
+    await saveConfig();
+  } catch (error) {
+    setNotice(`保存失败: ${error.message}`, "error");
+  }
+});
+
+loadAll().catch((error) => {
+  setNotice(`初始化失败: ${error.message}`, "error");
+});
+</script>
+</body>
+</html>

@@ -99,7 +99,7 @@ int main(int argc, char* argv[]) {
   OPENEMS_LOG_I("Collector", site->to_string());
 
   // Create shared memory
-  std::string shm_name = "Global\\openems_rt_db";
+  std::string shm_name = "Local\\openems_rt_db";
   uint32_t ti_count = 0;
   uint32_t telem_count = 0;
   uint32_t cmd_count = 0;

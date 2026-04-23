@@ -47,5 +47,15 @@ target_link_libraries(openems-iec104-collector PRIVATE
   openems_rt_db
 )
 
+# Process 5: History sampler - attaches to RtDb and writes daily JSONL history files
+add_executable(openems-history
+  src/history_main.cpp
+)
+target_link_libraries(openems-history PRIVATE
+  openems_common
+  openems_utils
+  openems_rt_db
+)
+
 # Copy config files to build directory
 file(COPY ${CMAKE_SOURCE_DIR}/config DESTINATION ${CMAKE_BINARY_DIR})

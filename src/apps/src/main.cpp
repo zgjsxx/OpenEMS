@@ -168,7 +168,7 @@ int main(int argc, char* argv[]) {
 
   std::string shm_name = "openems_rt_db";
 #ifdef _WIN32
-  shm_name = "Global\\openems_rt_db";  // Windows named shared memory
+  shm_name = "Local\\openems_rt_db";  // Windows named shared memory
 #endif
 
   OPENEMS_LOG_I("Main", "Creating RtDb shared memory: " + shm_name +

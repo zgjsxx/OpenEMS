@@ -15,6 +15,7 @@
 #include <csignal>
 #include <atomic>
 #include <vector>
+#include <cmath>
 
 static std::atomic<bool> g_running{true};
 static void signal_handler(int) { g_running = false; }
@@ -99,7 +100,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Create or attach RtDb shared memory
-  std::string shm_name = "Global\\openems_rt_db";
+  std::string shm_name = "Local\\openems_rt_db";
   uint32_t telem = count_telemetry(cfg);
   uint32_t ti = count_teleindication(cfg);
   uint32_t total = telem + ti;
@@ -143,20 +144,20 @@ int main(int argc, char* argv[]) {
           pt->id(), pt->category(), mapping.scale);
     }
 
-    // Set ASDU callback — write to RtDb on each received ASDU
-    client->set_asdu_callback([db](const openems::iec104::AsduData& asdu) {
-      for (size_t i = 0; i < asdu.sequence_ioas.size(); ++i) {
-        uint32_t ioa = asdu.sequence_ioas[i];
-        uint8_t tid = static_cast<uint8_t>(asdu.type_id);
-
-        // We need to find the registered point by type_id+ioa
-        // The client's dispatch_asdu already does this internally,
-        // but for the callback path we look it up by iterating config
-        // For now, the callback is a notification hook — actual
-        // dispatch happens inside the client via dispatch_asdu.
-        // Here we just log for visibility.
+    client->set_asdu_callback([db](const openems::iec104::PointUpdate& update) {
+      if (!update.valid) {
         OPENEMS_LOG_D("IEC104Collector",
-            "ASDU: TID=" + std::to_string(tid) + " IOA=" + std::to_string(ioa));
+            "Skip invalid IEC104 update for point " + update.point_id);
+        return;
+      }
+
+      if (update.category == openems::common::PointCategory::Teleindication) {
+        db->write_teleindication(update.point_id,
+            static_cast<uint16_t>(std::round(update.value)),
+            update.quality, update.valid);
+      } else {
+        db->write_telemetry(update.point_id,
+            update.value, update.quality, update.valid);
       }
     });
 
