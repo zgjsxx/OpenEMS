@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Comm Config</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </div>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">通讯配置</div>
+        <div class="page-subtitle">在线编辑 `device.csv`、点表和映射表；保存前先做校验并自动备份</div>
+      </div>
+    </header>
+    <main class="page-content">
+      <div class="toolbar">
+        <button id="reload-btn" class="secondary">重新加载</button>
+        <button id="validate-btn" class="secondary">校验</button>
+        <button id="save-btn">保存</button>
+      </div>
+      <div id="notice" class="notice">加载中...</div>
+      <section class="table-card">
+        <div class="table-card-header">
+          <div>
+            <div class="section-title" id="table-title">-</div>
+            <div class="section-subtitle" id="table-desc">-</div>
+          </div>
+          <div class="toolbar compact" id="tabs"></div>
+        </div>
+        <div class="table-card-body">
+          <div class="toolbar compact" id="table-actions"></div>
+          <div class="table-wrap" id="table-wrap"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+const state = { schema: [], tables: {}, activeTab: null, currentUser: null };
+
+function setNotice(message, kind = "") {
+  const el = document.getElementById("notice");
+  el.className = `notice ${kind}`.trim();
+  el.textContent = message;
+}
+
+function schemaFor(name) {
+  return state.schema.find((item) => item.name === name);
+}
+
+function emptyRow(table) {
+  const row = {};
+  for (const column of table.columns) {
+    row[column.name] = column.name === "writable" ? "false" : "";
+  }
+  return row;
+}
+
+function deviceIds() {
+  return (state.tables.device || []).map((row) => row.id).filter(Boolean);
+}
+
+function pointRows() {
+  return ["telemetry", "teleindication", "telecontrol", "teleadjust"].flatMap((name) => (state.tables[name] || []).map((row) => ({ table: name, row })));
+}
+
+function pointIdsByProtocol(protocol) {
+  const protocols = {};
+  for (const device of state.tables.device || []) protocols[device.id] = device.protocol;
+  return pointRows().filter(({ row }) => row.id && protocols[row.device_id] === protocol).map(({ row }) => row.id);
+}
+
+function dynamicOptions(column, currentValue) {
+  let options = [];
+  if (column.options) options = [...column.options];
+  else if (column.dynamic_options === "device_ids") options = deviceIds();
+  else if (column.dynamic_options === "modbus_point_ids") options = pointIdsByProtocol("modbus-tcp");
+  else if (column.dynamic_options === "iec104_point_ids") options = pointIdsByProtocol("iec104");
+  if (currentValue && !options.includes(currentValue)) options.unshift(currentValue);
+  return options;
+}
+
+function renderTabs() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = state.schema.map((table) => `<button class="${state.activeTab === table.name ? "" : "secondary"}" data-tab="${table.name}">${table.title}</button>`).join("");
+  tabs.querySelectorAll("[data-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeTab = button.dataset.tab;
+      renderTable();
+      renderTabs();
+    });
+  });
+}
+
+function renderTable() {
+  const table = schemaFor(state.activeTab);
+  const rows = state.tables[table.name] || [];
+  document.getElementById("table-title").textContent = table.title;
+  document.getElementById("table-desc").textContent = table.single_row ? "单行表" : "多行表";
+  const actions = document.getElementById("table-actions");
+  actions.innerHTML = table.single_row ? "" : '<button id="add-row" class="secondary">新增行</button>';
+  const columns = table.columns;
+  let html = "<table><thead><tr>";
+  for (const column of columns) html += `<th>${OpenEMSAdmin.escapeHtml(column.label)}</th>`;
+  if (!table.single_row) html += "<th>操作</th>";
+  html += "</tr></thead><tbody>";
+  const effectiveRows = table.single_row && rows.length === 0 ? [emptyRow(table)] : rows;
+  if (table.single_row && rows.length === 0) state.tables[table.name] = effectiveRows;
+  html += effectiveRows.map((row, rowIndex) => {
+    const cells = columns.map((column) => {
+      const value = row[column.name] || "";
+      if (column.type === "select" || column.dynamic_options) {
+        const options = dynamicOptions(column, value);
+        return `<td><select data-row="${rowIndex}" data-column="${column.name}">${options.map((option) => `<option value="${OpenEMSAdmin.escapeHtml(option)}" ${option === value ? "selected" : ""}>${OpenEMSAdmin.escapeHtml(option)}</option>`).join("")}</select></td>`;
+      }
+      return `<td><input type="${column.type === "number" ? "number" : "text"}" value="${OpenEMSAdmin.escapeHtml(value)}" data-row="${rowIndex}" data-column="${column.name}"></td>`;
+    }).join("");
+    return `<tr>${cells}${table.single_row ? "" : `<td><button class="danger" data-delete="${rowIndex}">删除</button></td>`}</tr>`;
+  }).join("");
+  html += "</tbody></table>";
+  document.getElementById("table-wrap").innerHTML = html;
+
+  document.querySelectorAll("#table-wrap input, #table-wrap select").forEach((field) => {
+    field.addEventListener("change", () => {
+      state.tables[table.name][Number(field.dataset.row)][field.dataset.column] = field.value;
+    });
+  });
+  document.querySelectorAll("[data-delete]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.tables[table.name].splice(Number(button.dataset.delete), 1);
+      renderTable();
+    });
+  });
+  const addBtn = document.getElementById("add-row");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => {
+      state.tables[table.name].push(emptyRow(table));
+      renderTable();
+    });
+  }
+}
+
+async function loadAll() {
+  const [schemaData, tableData] = await Promise.all([
+    OpenEMSAdmin.api("/api/comm/schema"),
+    OpenEMSAdmin.api("/api/comm/data"),
+  ]);
+  state.schema = schemaData.tables || [];
+  state.tables = tableData.tables || {};
+  state.activeTab = state.activeTab || (state.schema[0] && state.schema[0].name);
+  renderTabs();
+  renderTable();
+  setNotice("配置已加载");
+}
+
+async function validateConfig() {
+  try {
+    const data = await OpenEMSAdmin.api("/api/comm/validate", {
+      method: "POST",
+      body: JSON.stringify({ tables: state.tables }),
+    });
+    setNotice(`校验通过，共 ${Object.keys(data.tables || {}).length} 张表`, "success");
+  } catch (error) {
+    setNotice(error.message || "校验失败", "error");
+  }
+}
+
+async function saveConfig() {
+  try {
+    const data = await OpenEMSAdmin.api("/api/comm/save", {
+      method: "POST",
+      body: JSON.stringify({ tables: state.tables }),
+    });
+    const restartText = (data.restart_required || []).join(" / ");
+    setNotice(`保存成功，备份目录：${data.backup_dir || "-"}；建议重启：${restartText}`, "success");
+  } catch (error) {
+    setNotice(error.message || "保存失败", "error");
+  }
+}
+
+async function boot() {
+  const me = await OpenEMSAdmin.bindChrome("comm");
+  state.currentUser = me.user || null;
+  if (state.currentUser.role !== "admin") {
+    setNotice("只有管理员可以修改通讯配置。当前页面已切换为只读。", "error");
+    document.getElementById("validate-btn").disabled = true;
+    document.getElementById("save-btn").disabled = true;
+  }
+  document.getElementById("reload-btn").addEventListener("click", loadAll);
+  document.getElementById("validate-btn").addEventListener("click", validateConfig);
+  document.getElementById("save-btn").addEventListener("click", saveConfig);
+  await loadAll();
+}
+
+boot();
+</script>
+</body>
+</html>

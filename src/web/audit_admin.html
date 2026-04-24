@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Audit</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </div>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">审计日志</div>
+        <div class="page-subtitle">登录、配置保存、遥控遥调和告警处理都会在此留痕</div>
+      </div>
+    </header>
+    <main class="page-content">
+      <section class="table-card">
+        <div class="table-card-header"><div class="section-title">筛选</div></div>
+        <div class="table-card-body">
+          <div class="filters">
+            <div><label for="action">动作</label><input id="action" type="text" placeholder="如 comm_save"></div>
+            <div><label for="username">用户</label><input id="username" type="text" placeholder="如 admin"></div>
+            <div><label>&nbsp;</label><button id="query-btn">刷新</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>时间</th><th>用户</th><th>动作</th><th>资源</th><th>结果</th><th>明细</th></tr></thead>
+              <tbody id="audit-rows"><tr><td colspan="6" class="muted">加载中</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+async function loadAudit() {
+  const params = new URLSearchParams({
+    action: document.getElementById("action").value.trim(),
+    username: document.getElementById("username").value.trim(),
+  });
+  const data = await OpenEMSAdmin.api(`/api/audit?${params.toString()}`);
+  const rows = data.rows || [];
+  document.getElementById("audit-rows").innerHTML = rows.length ? rows.map((row) => `
+    <tr>
+      <td>${OpenEMSAdmin.formatDateTime(row.created_at)}</td>
+      <td>${OpenEMSAdmin.escapeHtml(row.username || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(row.action || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(`${row.resource_type || "-"} / ${row.resource_id || "-"}`)}</td>
+      <td>${OpenEMSAdmin.statusPill(row.result || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(row.details || "-")}</td>
+    </tr>
+  `).join("") : '<tr><td colspan="6" class="muted">暂无日志</td></tr>';
+}
+
+async function boot() {
+  await OpenEMSAdmin.bindChrome("audit");
+  document.getElementById("query-btn").addEventListener("click", loadAudit);
+  await loadAudit();
+}
+
+boot();
+</script>
+</body>
+</html>

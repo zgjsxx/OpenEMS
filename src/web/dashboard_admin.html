@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Dashboard</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-meta">
+      <div>单站运维后台</div>
+      <div>实时、告警、配置、审计一体化</div>
+    </div>
+    <nav class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </nav>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">首页看板</div>
+        <div class="page-subtitle">查看站点实时状态、活动告警和最近控制动作</div>
+      </div>
+      <div class="user-chip">数据库 <span id="db-status-wrap"><span class="pill muted">检查中</span></span></div>
+    </header>
+    <main class="page-content">
+      <section class="card-grid">
+        <article class="card"><div class="label">设备数</div><div class="value" id="device-count">-</div><div class="hint" id="protocol-summary">-</div></article>
+        <article class="card"><div class="label">活动告警</div><div class="value" id="alarm-count">-</div><div class="hint">来自运行时告警文件并同步到 PostgreSQL</div></article>
+        <article class="card"><div class="label">点位总数</div><div class="value" id="point-count">-</div><div class="hint" id="point-summary">-</div></article>
+        <article class="card"><div class="label">最近刷新</div><div class="value" id="last-update" style="font-size:20px;">-</div><div class="hint" id="update-seq">Seq: -</div></article>
+      </section>
+
+      <section class="split-grid">
+        <div class="table-card">
+          <div class="table-card-header">
+            <div>
+              <div class="section-title">活动告警</div>
+              <div class="section-subtitle">支持跳转到告警页做确认和消音</div>
+            </div>
+            <a class="button secondary" href="/alarms">打开告警页</a>
+          </div>
+          <div class="table-card-body">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>级别</th><th>点位</th><th>消息</th><th>触发时间</th></tr></thead>
+                <tbody id="alarm-rows"><tr><td colspan="4" class="muted">加载中</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div class="table-card-header">
+            <div>
+              <div class="section-title">运行状态</div>
+              <div class="section-subtitle">后端、共享内存和 PostgreSQL 可用性</div>
+            </div>
+          </div>
+          <div class="table-card-body">
+            <div class="list" id="status-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <div class="section-title">设备实时视图</div>
+            <div class="section-subtitle">运维和管理员可在此执行遥控遥调</div>
+          </div>
+        </div>
+        <div id="device-panels" class="list"></div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+let currentUser = null;
+let deviceNames = {};
+let commandStatusCache = {};
+
+function formatValue(value) {
+  if (typeof value !== "number") return "-";
+  if (Math.abs(value) >= 1000) return value.toFixed(1);
+  if (Math.abs(value) >= 1) return value.toFixed(2);
+  if (Math.abs(value) >= 0.01) return value.toFixed(3);
+  return value.toFixed(4);
+}
+
+function canControl() {
+  return currentUser && ["admin", "operator"].includes(currentUser.role);
+}
+
+async function loadConfigNames() {
+  const data = await OpenEMSAdmin.api("/api/config");
+  deviceNames = {};
+  for (const device of data.devices || []) {
+    deviceNames[device.id] = device.name || device.id;
+  }
+}
+
+async function refreshSummary() {
+  const [system, snapshot, alarms] = await Promise.all([
+    OpenEMSAdmin.api("/api/system/status"),
+    OpenEMSAdmin.api("/api/snapshot"),
+    OpenEMSAdmin.api("/api/alarms/active"),
+  ]);
+
+  const pointCounts = system.point_counts || {};
+  const totalPoints = Object.values(pointCounts).reduce((sum, value) => sum + Number(value || 0), 0);
+  document.getElementById("device-count").textContent = system.device_count ?? "-";
+  document.getElementById("alarm-count").textContent = alarms.count ?? 0;
+  document.getElementById("point-count").textContent = totalPoints;
+  document.getElementById("protocol-summary").textContent = Object.entries(system.protocol_counts || {}).map(([k, v]) => `${k}:${v}`).join(" / ") || "-";
+  document.getElementById("point-summary").textContent = Object.entries(pointCounts).map(([k, v]) => `${k}:${v}`).join(" / ") || "-";
+  document.getElementById("last-update").textContent = OpenEMSAdmin.formatDateTime(snapshot.last_update_time);
+  document.getElementById("update-seq").textContent = `Seq: ${snapshot.update_seq || "-"}`;
+  document.getElementById("db-status-wrap").innerHTML = OpenEMSAdmin.statusPill(system.db && system.db.ok ? "online" : "offline");
+
+  renderAlarmPreview(alarms.alarms || []);
+  renderStatusList(system, snapshot);
+  renderDevices(snapshot.points || []);
+}
+
+function renderAlarmPreview(rows) {
+  const body = document.getElementById("alarm-rows");
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="4" class="muted">当前无活动告警</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.slice(0, 8).map((alarm) => `
+    <tr>
+      <td>${OpenEMSAdmin.statusPill(alarm.level || "warning")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(alarm.point_id || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(alarm.message || "-")}</td>
+      <td>${OpenEMSAdmin.formatDateTime(alarm.trigger_time)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderStatusList(system, snapshot) {
+  const list = document.getElementById("status-list");
+  const rows = [
+    ["数据库", system.db && system.db.ok ? "online" : "offline", system.db && system.db.error ? system.db.error : (system.db && system.db.server_time ? `Server: ${OpenEMSAdmin.formatDateTime(system.db.server_time)}` : "已连接")],
+    ["共享内存", snapshot.error ? "offline" : "online", snapshot.error || "Collector 已连接"],
+    ["活动告警源", (system.alarms_active || 0) > 0 ? "warning" : "online", `当前 ${system.alarms_active || 0} 条`],
+  ];
+  list.innerHTML = rows.map(([label, status, hint]) => `
+    <div class="list-item">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+        <strong>${label}</strong>
+        ${OpenEMSAdmin.statusPill(status)}
+      </div>
+      <div class="muted" style="margin-top:8px;">${OpenEMSAdmin.escapeHtml(hint)}</div>
+    </div>`).join("");
+}
+
+async function submitCommand(pointId) {
+  const input = document.getElementById(`cmd-${pointId}`);
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) {
+    alert("请输入有效数值");
+    return;
+  }
+  if (!window.confirm(`确认下发 ${pointId} = ${value} ?`)) {
+    return;
+  }
+  await OpenEMSAdmin.api("/api/command", {
+    method: "POST",
+    body: JSON.stringify({ point_id: pointId, desired_value: value }),
+  });
+  input.value = "";
+  commandStatusCache[pointId] = { status: "Pending", time: new Date().toISOString() };
+  await refreshCommands(pointId);
+  await refreshSummary();
+}
+
+async function refreshCommands(singlePointId = "") {
+  const targets = singlePointId ? [singlePointId] : Object.keys(commandStatusCache);
+  for (const pointId of targets) {
+    const data = await OpenEMSAdmin.api(`/api/command/${encodeURIComponent(pointId)}`);
+    commandStatusCache[pointId] = { status: data.status || "Idle", time: data.complete_time || data.submit_time || null };
+  }
+}
+
+function renderDevices(points) {
+  const container = document.getElementById("device-panels");
+  const groups = {};
+  for (const point of points) {
+    const key = point.device || point.device_id || "unknown";
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(point);
+  }
+  const devices = Object.keys(groups).sort();
+  if (!devices.length) {
+    container.innerHTML = '<div class="list-item muted">当前没有实时点位数据，请先启动采集器。</div>';
+    return;
+  }
+  container.innerHTML = devices.map((deviceId) => {
+    const rows = groups[deviceId].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const body = rows.map((point) => {
+      const isWritable = !!point.writable && canControl();
+      const quality = OpenEMSAdmin.qualityPill(point.quality || "Unknown");
+      const value = point.valid ? formatValue(point.value) : "---";
+      if (isWritable) {
+        const cmd = commandStatusCache[point.id] || {};
+        return `<tr>
+          <td>${OpenEMSAdmin.escapeHtml(point.id)}</td>
+          <td>${value}</td>
+          <td>${OpenEMSAdmin.escapeHtml(point.unit || "")}</td>
+          <td>${quality}</td>
+          <td>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input id="cmd-${point.id}" type="number" step="any" style="max-width:120px;">
+              <button onclick="submitCommand('${point.id}')">执行</button>
+            </div>
+          </td>
+          <td>${OpenEMSAdmin.statusPill(cmd.status || "Idle")}<div class="muted" style="margin-top:6px;">${OpenEMSAdmin.formatDateTime(cmd.time)}</div></td>
+        </tr>`;
+      }
+      return `<tr>
+        <td>${OpenEMSAdmin.escapeHtml(point.id)}</td>
+        <td>${value}</td>
+        <td>${OpenEMSAdmin.escapeHtml(point.unit || "")}</td>
+        <td>${quality}</td>
+        <td>${OpenEMSAdmin.escapeHtml(point.category || "-")}</td>
+        <td>${OpenEMSAdmin.formatDateTime(point.timestamp)}</td>
+      </tr>`;
+    }).join("");
+    return `<section class="table-card">
+      <div class="table-card-header">
+        <div>
+          <div class="section-title">${OpenEMSAdmin.escapeHtml(deviceNames[deviceId] || deviceId)}</div>
+          <div class="section-subtitle">${OpenEMSAdmin.escapeHtml(deviceId)}</div>
+        </div>
+      </div>
+      <div class="table-card-body">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>点位</th><th>当前值</th><th>单位</th><th>质量</th><th>${canControl() ? "控制" : "类别"}</th><th>${canControl() ? "命令状态" : "时间"}</th></tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+      </div>
+    </section>`;
+  }).join("");
+}
+
+async function boot() {
+  const me = await OpenEMSAdmin.bindChrome("dashboard");
+  currentUser = me.user || null;
+  await loadConfigNames();
+  await refreshSummary();
+  setInterval(refreshSummary, 3000);
+}
+
+boot().catch((error) => {
+  document.getElementById("device-panels").innerHTML = `<div class="list-item">${OpenEMSAdmin.escapeHtml(error.message)}</div>`;
+});
+</script>
+</body>
+</html>

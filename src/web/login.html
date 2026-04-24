@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS 登录</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<main class="login-shell">
+  <section class="login-card">
+    <h1>OpenEMS</h1>
+    <p>单站运维后台。请使用本地账号登录后访问实时看板、告警、通讯配置和审计能力。</p>
+    <div id="notice" class="notice hidden"></div>
+    <div class="form-row">
+      <label for="username">用户名</label>
+      <input id="username" type="text" value="admin" autocomplete="username">
+    </div>
+    <div class="form-row">
+      <label for="password">密码</label>
+      <input id="password" type="password" value="admin123" autocomplete="current-password">
+    </div>
+    <div class="toolbar compact">
+      <button id="login-btn" style="width:100%;">登录</button>
+    </div>
+    <div class="muted" style="margin-top:12px;font-size:12px;">
+      默认管理员账号会在数据库首次初始化后自动创建，可通过环境变量 `OPENEMS_ADMIN_USERNAME` / `OPENEMS_ADMIN_PASSWORD_HASH` 覆盖。
+    </div>
+  </section>
+</main>
+<script src="/assets/admin.js"></script>
+<script>
+const notice = document.getElementById("notice");
+function setNotice(message, kind = "error") {
+  notice.className = `notice ${kind}`.trim();
+  notice.textContent = message;
+  notice.classList.remove("hidden");
+}
+
+async function login() {
+  notice.classList.add("hidden");
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "登录失败");
+    }
+    if (data.ok) {
+      window.location.href = "/dashboard";
+    }
+  } catch (error) {
+    setNotice(error.message || "登录失败");
+  }
+}
+
+document.getElementById("login-btn").addEventListener("click", login);
+document.getElementById("password").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    login();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Config Overview</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </div>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">配置概览</div>
+        <div class="page-subtitle">查看当前 CSV 配置规模、设备协议分布和点位统计</div>
+      </div>
+      <a class="button secondary" href="/comm">打开通讯配置编辑器</a>
+    </header>
+    <main class="page-content">
+      <section class="card-grid">
+        <article class="card"><div class="label">设备数</div><div class="value" id="device-count">-</div><div class="hint" id="device-type-summary">-</div></article>
+        <article class="card"><div class="label">协议分布</div><div class="value" id="protocol-count">-</div><div class="hint" id="protocol-summary">-</div></article>
+        <article class="card"><div class="label">点位总数</div><div class="value" id="point-total">-</div><div class="hint" id="point-summary">-</div></article>
+        <article class="card"><div class="label">映射数</div><div class="value" id="mapping-total">-</div><div class="hint" id="mapping-summary">-</div></article>
+      </section>
+
+      <section class="table-card">
+        <div class="table-card-header"><div><div class="section-title">设备列表</div><div class="section-subtitle">CSV 仍然是现场配置主源</div></div></div>
+        <div class="table-card-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>协议</th><th>IP</th><th>端口</th><th>轮询周期</th></tr></thead>
+              <tbody id="device-rows"><tr><td colspan="7" class="muted">加载中</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+async function boot() {
+  await OpenEMSAdmin.bindChrome("config");
+  const data = await OpenEMSAdmin.api("/api/config/overview");
+  const deviceTypeSummary = Object.entries(data.device_type_counts || {}).map(([k, v]) => `${k}:${v}`).join(" / ") || "-";
+  const protocolSummary = Object.entries(data.protocol_counts || {}).map(([k, v]) => `${k}:${v}`).join(" / ") || "-";
+  const pointSummary = Object.entries(data.point_counts || {}).map(([k, v]) => `${k}:${v}`).join(" / ") || "-";
+  const mappingSummary = Object.entries(data.mapping_counts || {}).map(([k, v]) => `${k}:${v}`).join(" / ") || "-";
+  const pointTotal = Object.values(data.point_counts || {}).reduce((sum, item) => sum + Number(item || 0), 0);
+  const mappingTotal = Object.values(data.mapping_counts || {}).reduce((sum, item) => sum + Number(item || 0), 0);
+
+  document.getElementById("device-count").textContent = data.device_count ?? "-";
+  document.getElementById("device-type-summary").textContent = deviceTypeSummary;
+  document.getElementById("protocol-count").textContent = Object.keys(data.protocol_counts || {}).length;
+  document.getElementById("protocol-summary").textContent = protocolSummary;
+  document.getElementById("point-total").textContent = pointTotal;
+  document.getElementById("point-summary").textContent = pointSummary;
+  document.getElementById("mapping-total").textContent = mappingTotal;
+  document.getElementById("mapping-summary").textContent = mappingSummary;
+
+  const rows = (data.tables && data.tables.device) || [];
+  document.getElementById("device-rows").innerHTML = rows.length ? rows.map((device) => `
+    <tr>
+      <td>${OpenEMSAdmin.escapeHtml(device.id || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(device.name || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(device.type || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(device.protocol || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(device.ip || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(device.port || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(device.poll_interval_ms || "-")}</td>
+    </tr>
+  `).join("") : '<tr><td colspan="7" class="muted">没有设备配置</td></tr>';
+}
+
+boot();
+</script>
+</body>
+</html>

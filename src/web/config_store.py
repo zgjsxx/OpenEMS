@@ -1,5 +1,7 @@
 import csv
+import shutil
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 
 
@@ -164,6 +166,20 @@ TABLE_SCHEMAS = [
 SCHEMA_BY_NAME = {table["name"]: table for table in TABLE_SCHEMAS}
 POINT_TABLE_NAMES = ["telemetry", "teleindication", "telecontrol", "teleadjust"]
 
+MODBUS_READ_FUNCTION_CODES = {"1", "2", "3", "4"}
+MODBUS_WRITE_FUNCTION_CODES = {"5", "6", "16"}
+DATA_TYPE_REGISTER_COUNTS = {
+    "bool": 1,
+    "int16": 1,
+    "uint16": 1,
+    "int32": 2,
+    "uint32": 2,
+    "float32": 2,
+    "int64": 4,
+    "uint64": 4,
+    "double": 4,
+}
+
 
 def _trim(value):
     return str(value or "").strip()
@@ -203,8 +219,9 @@ def _bool_string(value):
 
 
 class ConfigStore:
-    def __init__(self, config_dir: Path):
+    def __init__(self, config_dir: Path, backup_root: Path | None = None):
         self.config_dir = Path(config_dir)
+        self.backup_root = Path(backup_root) if backup_root else Path("runtime") / "config_backups"
 
     def schema(self):
         return {"tables": deepcopy(TABLE_SCHEMAS)}
@@ -284,6 +301,9 @@ class ConfigStore:
 
         point_ids = set()
         point_device_ids = {}
+        point_table_by_id = {}
+        point_data_type_by_id = {}
+        point_writable_by_id = {}
         for table_name in POINT_TABLE_NAMES:
             for row_index, row in enumerate(tables[table_name]):
                 point_id = _trim(row.get("id"))
@@ -296,6 +316,9 @@ class ConfigStore:
                 elif point_id:
                     point_ids.add(point_id)
                     point_device_ids[point_id] = device_id
+                    point_table_by_id[point_id] = table_name
+                    point_data_type_by_id[point_id] = data_type
+                    point_writable_by_id[point_id] = writable
 
                 if device_id and device_id not in device_ids:
                     add_error(table_name, "device_id must reference an existing device.", row_index, "device_id")
@@ -303,6 +326,8 @@ class ConfigStore:
                     add_error(table_name, "data_type must be one of the supported data types.", row_index, "data_type")
                 if writable not in {"true", "false"}:
                     add_error(table_name, "writable must be true or false.", row_index, "writable")
+                if table_name in {"telecontrol", "teleadjust"} and writable != "true":
+                    add_error(table_name, "Control and adjustment points must be writable=true.", row_index, "writable")
 
         modbus_points = set()
         for row_index, row in enumerate(tables["modbus_mapping"]):
@@ -315,6 +340,29 @@ class ConfigStore:
             data_type = _trim(row.get("data_type"))
             if data_type and data_type not in DATA_TYPE_OPTIONS:
                 add_error("modbus_mapping", "data_type must be one of the supported data types.", row_index, "data_type")
+            point_table = point_table_by_id.get(point_id, "")
+            point_data_type = point_data_type_by_id.get(point_id, "")
+            register_count = _trim(row.get("register_count"))
+            function_code = _trim(row.get("function_code"))
+            if point_data_type and data_type and point_data_type != data_type:
+                add_error("modbus_mapping", "mapping data_type must match the point data_type.", row_index, "data_type")
+            expected_registers = DATA_TYPE_REGISTER_COUNTS.get(data_type)
+            if expected_registers is not None and register_count:
+                try:
+                    parsed_count = int(register_count)
+                    if parsed_count != expected_registers:
+                        add_error(
+                            "modbus_mapping",
+                            f"register_count for {data_type} must be {expected_registers}.",
+                            row_index,
+                            "register_count",
+                        )
+                except ValueError:
+                    pass
+            if point_table in {"telecontrol", "teleadjust"} and function_code and function_code not in MODBUS_WRITE_FUNCTION_CODES:
+                add_error("modbus_mapping", "telecontrol/teleadjust points must use write function code 5, 6 or 16.", row_index, "function_code")
+            if point_table in {"telemetry", "teleindication"} and function_code and function_code not in MODBUS_READ_FUNCTION_CODES:
+                add_error("modbus_mapping", "telemetry/teleindication points must use read function code 1, 2, 3 or 4.", row_index, "function_code")
             self._validate_float("modbus_mapping", row_index, "scale", row.get("scale"), add_error)
             self._validate_float("modbus_mapping", row_index, "offset", row.get("offset"), add_error)
 
@@ -328,6 +376,9 @@ class ConfigStore:
             self._validate_int("iec104_mapping", row_index, "common_address", row.get("common_address"), add_error, minimum=0, maximum=65535)
             self._validate_float("iec104_mapping", row_index, "scale", row.get("scale"), add_error)
             self._validate_int("iec104_mapping", row_index, "cot", row.get("cot"), add_error, minimum=0)
+            mapping_data_type = point_data_type_by_id.get(point_id, "")
+            if mapping_data_type == "bool" and point_table_by_id.get(point_id) in {"telemetry", "teleadjust"}:
+                add_error("iec104_mapping", "bool IEC104 points should normally be placed in teleindication/telecontrol tables.", row_index, "point_id")
 
         for point_id in sorted(modbus_points & iec104_points):
             add_error("modbus_mapping", f"Point '{point_id}' cannot have both Modbus and IEC104 mappings.")
@@ -341,6 +392,7 @@ class ConfigStore:
             return validation
 
         tables = validation["tables"]
+        backup_dir = self._backup_current_csvs()
         for table in TABLE_SCHEMAS:
             columns = [column["name"] for column in table["columns"]]
             rows = [self._normalize_row(table["name"], row, columns) for row in tables[table["name"]]]
@@ -349,6 +401,7 @@ class ConfigStore:
         return {
             "ok": True,
             "message": "CSV files saved successfully.",
+            "backup_dir": str(backup_dir),
             "restart_required": [
                 "openems-modbus-collector",
                 "openems-iec104-collector",
@@ -375,6 +428,16 @@ class ConfigStore:
                 value = _bool_string(value)
             normalized[column] = value
         return normalized
+
+    def _backup_current_csvs(self):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = self.backup_root / timestamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for table in TABLE_SCHEMAS:
+            source = self.config_dir / table["file"]
+            if source.exists():
+                shutil.copy2(source, backup_dir / table["file"])
+        return backup_dir
 
     @staticmethod
     def _validate_int(table, row_index, column, value, add_error, minimum=None, maximum=None):

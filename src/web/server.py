@@ -1,29 +1,45 @@
-"""OpenEMS web dashboard and CSV configuration console."""
+"""OpenEMS single-site operations console with PostgreSQL-backed admin features."""
 
 import asyncio
 import csv
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from auth import (
+    SESSION_COOKIE,
+    create_session_token,
+    hash_password,
+    hash_session_secret,
+    split_session_token,
+    verify_password,
+)
 from config_store import ConfigStore
+from db import Database
 from shm_reader import ShmReader
 
 WEB_DIR = Path(__file__).parent
 CONFIG_DIR = Path(__file__).parent.parent.parent / "config" / "tables"
 ALARM_FILE = Path("runtime") / "alarms_active.json"
 HISTORY_DIR = Path("runtime") / "history"
+MIGRATIONS_DIR = WEB_DIR / "migrations"
 
-app = FastAPI(title="OpenEMS Dashboard")
+ROLE_LEVELS = {"viewer": 1, "operator": 2, "admin": 3}
+
+app = FastAPI(title="OpenEMS Operations Console")
+app.mount("/assets", StaticFiles(directory=str(WEB_DIR / "assets")), name="assets")
 
 _reader = ShmReader()
-_config_store = ConfigStore(CONFIG_DIR)
+_config_store = ConfigStore(CONFIG_DIR, backup_root=Path("runtime") / "config_backups")
+_db = Database(MIGRATIONS_DIR)
+_db_state: Dict[str, Any] = {"ok": False, "error": "Database not initialized."}
 
 
 class CommandRequest(BaseModel):
@@ -305,3 +321,6 @@ async def api_config_editor_save(req: ConfigEditorRequest):
     result = await asyncio.to_thread(_config_store.save, req.model_dump())
     status_code = 200 if result["ok"] else 400
     return JSONResponse(result, status_code=status_code)
+
+
+from admin_server import app  # noqa: E402,F401

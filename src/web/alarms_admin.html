@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Alarms</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </div>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">告警管理</div>
+        <div class="page-subtitle">活动告警从运行时文件同步到 PostgreSQL，确认与消音状态持久化</div>
+      </div>
+    </header>
+    <main class="page-content">
+      <section class="table-card">
+        <div class="table-card-header">
+          <div>
+            <div class="section-title">筛选</div>
+            <div class="section-subtitle">支持活动 / 历史告警切换</div>
+          </div>
+        </div>
+        <div class="table-card-body">
+          <div class="filters">
+            <div><label for="status">范围</label><select id="status"><option value="active">活动告警</option><option value="history">历史告警</option></select></div>
+            <div><label for="severity">级别</label><select id="severity"><option value="">全部</option><option value="warning">warning</option><option value="critical">critical</option></select></div>
+            <div><label for="device-id">设备</label><input id="device-id" type="text" placeholder="例如 pv-001"></div>
+            <div><label>&nbsp;</label><button id="query-btn">刷新</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>状态</th><th>级别</th><th>设备</th><th>点位</th><th>消息</th><th>首次触发</th><th>最后变化</th><th>处理</th>
+                </tr>
+              </thead>
+              <tbody id="alarm-table"><tr><td colspan="8" class="muted">加载中</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+let currentUser = null;
+
+function canOperate() {
+  return currentUser && ["admin", "operator"].includes(currentUser.role);
+}
+
+async function runAction(action, alarmId) {
+  if (!canOperate()) return;
+  if (!window.confirm(`确认执行 ${action} ${alarmId} ?`)) return;
+  await OpenEMSAdmin.api(`/api/alarms/${encodeURIComponent(alarmId)}/${action}`, { method: "POST" });
+  await loadAlarms();
+}
+
+async function loadAlarms() {
+  const params = new URLSearchParams({
+    status: document.getElementById("status").value,
+    severity: document.getElementById("severity").value,
+    device_id: document.getElementById("device-id").value.trim(),
+  });
+  const data = await OpenEMSAdmin.api(`/api/alarms?${params.toString()}`);
+  const body = document.getElementById("alarm-table");
+  const rows = data.rows || [];
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" class="muted">没有匹配的告警</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((row) => {
+    const lastAt = row.cleared_at || row.ack_at || row.silenced_at || row.last_seen_at;
+    const actionButtons = canOperate() && !row.cleared_at ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="secondary" onclick="runAction('ack', '${row.alarm_id}')">确认</button>
+        <button class="warn" onclick="runAction('silence', '${row.alarm_id}')">消音</button>
+      </div>` : "-";
+    return `<tr>
+      <td>${OpenEMSAdmin.statusPill(row.status || "active")}</td>
+      <td>${OpenEMSAdmin.statusPill(row.severity || "warning")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(row.device_id || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(row.point_id || "-")}</td>
+      <td>${OpenEMSAdmin.escapeHtml(row.message || "-")}</td>
+      <td>${OpenEMSAdmin.formatDateTime(row.active_since)}</td>
+      <td>${OpenEMSAdmin.formatDateTime(lastAt)}</td>
+      <td>${actionButtons}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function boot() {
+  const me = await OpenEMSAdmin.bindChrome("alarms");
+  currentUser = me.user || null;
+  document.getElementById("query-btn").addEventListener("click", loadAlarms);
+  await loadAlarms();
+}
+
+boot();
+</script>
+</body>
+</html>

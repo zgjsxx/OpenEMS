@@ -2,3 +2,4 @@ build/
 __pycache__/
 .claude/
 *.pyc
+runtime/config_backups/

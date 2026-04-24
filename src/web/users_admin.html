@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Users</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </div>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">用户管理</div>
+        <div class="page-subtitle">本地账号、角色和启停状态都存储在 PostgreSQL</div>
+      </div>
+    </header>
+    <main class="page-content">
+      <section class="table-card">
+        <div class="table-card-header"><div class="section-title">新增用户</div></div>
+        <div class="table-card-body">
+          <div id="notice" class="notice hidden"></div>
+          <div class="filters">
+            <div><label for="username">用户名</label><input id="username" type="text"></div>
+            <div><label for="password">密码</label><input id="password" type="password"></div>
+            <div><label for="role">角色</label><select id="role"><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select></div>
+            <div><label for="status">状态</label><select id="status"><option value="active">active</option><option value="disabled">disabled</option></select></div>
+          </div>
+          <div class="toolbar compact"><button id="create-btn">创建用户</button></div>
+        </div>
+      </section>
+
+      <section class="table-card">
+        <div class="table-card-header"><div class="section-title">用户列表</div></div>
+        <div class="table-card-body">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>最近登录</th><th>创建时间</th><th>操作</th></tr></thead>
+              <tbody id="user-rows"><tr><td colspan="7" class="muted">加载中</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+function setNotice(message, kind = "success") {
+  const el = document.getElementById("notice");
+  el.className = `notice ${kind}`.trim();
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+async function loadUsers() {
+  const data = await OpenEMSAdmin.api("/api/users");
+  const rows = data.rows || [];
+  document.getElementById("user-rows").innerHTML = rows.length ? rows.map((user) => `
+    <tr>
+      <td>${user.id}</td>
+      <td>${OpenEMSAdmin.escapeHtml(user.username)}</td>
+      <td>${OpenEMSAdmin.statusPill(user.role)}</td>
+      <td>${OpenEMSAdmin.statusPill(user.status)}</td>
+      <td>${OpenEMSAdmin.formatDateTime(user.last_login_at)}</td>
+      <td>${OpenEMSAdmin.formatDateTime(user.created_at)}</td>
+      <td><button class="secondary" onclick="toggleUser(${user.id}, '${user.status === "active" ? "disabled" : "active"}')">${user.status === "active" ? "禁用" : "启用"}</button></td>
+    </tr>
+  `).join("") : '<tr><td colspan="7" class="muted">暂无用户</td></tr>';
+}
+
+async function toggleUser(userId, status) {
+  await OpenEMSAdmin.api(`/api/users/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+  await loadUsers();
+}
+
+async function createUser() {
+  const payload = {
+    username: document.getElementById("username").value.trim(),
+    password: document.getElementById("password").value,
+    role: document.getElementById("role").value,
+    status: document.getElementById("status").value,
+  };
+  await OpenEMSAdmin.api("/api/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setNotice(`用户 ${payload.username} 创建成功`);
+  document.getElementById("username").value = "";
+  document.getElementById("password").value = "";
+  await loadUsers();
+}
+
+async function boot() {
+  await OpenEMSAdmin.bindChrome("users");
+  document.getElementById("create-btn").addEventListener("click", createUser);
+  await loadUsers();
+}
+
+boot();
+</script>
+</body>
+</html>
