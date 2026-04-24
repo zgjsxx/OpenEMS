@@ -1,0 +1,69 @@
+{
+  "server": {
+    "name": "OpenEMS IEC104 Test Server",
+    "ip": "0.0.0.0",
+    "port": 2404,
+    "tick_rate_ms": 100,
+    "select_timeout_ms": 10000,
+    "max_connections": 0,
+    "ui_port": 8094,
+    "persist_events": true,
+    "force_fail_commands": false
+  },
+  "stations": [
+    {
+      "common_address": 1,
+      "name": "Grid Station"
+    }
+  ],
+  "points": [
+    {
+      "id": "grid-on-off-status",
+      "station_common_address": 1,
+      "ioa": 1,
+      "type_id": 3,
+      "type": "M_DP_NA_1",
+      "category": "teleindication",
+      "value": 1,
+      "quality": "GOOD",
+      "report_ms": 1000,
+      "auto_transmit": true,
+      "writable": false,
+      "related_ioa": null,
+      "scale": 1.0,
+      "description": "Imported example from iec104_mapping.csv"
+    },
+    {
+      "id": "grid-active-power",
+      "station_common_address": 1,
+      "ioa": 100,
+      "type_id": 13,
+      "type": "M_ME_NC_1",
+      "category": "telemetry",
+      "value": 120.5,
+      "quality": "GOOD",
+      "report_ms": 1000,
+      "auto_transmit": true,
+      "writable": false,
+      "related_ioa": null,
+      "scale": 1.0,
+      "description": "Grid active power"
+    },
+    {
+      "id": "grid-switch-command",
+      "station_common_address": 1,
+      "ioa": 200,
+      "type_id": 45,
+      "type": "C_SC_NA_1",
+      "category": "telecontrol",
+      "value": false,
+      "quality": "GOOD",
+      "report_ms": 0,
+      "auto_transmit": false,
+      "writable": true,
+      "related_ioa": 10,
+      "scale": 1.0,
+      "description": "Example single command linked to switch position"
+    }
+  ]
+}

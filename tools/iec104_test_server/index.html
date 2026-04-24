@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenEMS IEC104 Test Server</title>
+  <style>
+    :root {
+      --bg: #0f141d;
+      --panel: #182130;
+      --panel-soft: #202b3d;
+      --panel-strong: #121a27;
+      --text: #edf4ff;
+      --muted: #94a5bf;
+      --accent: #5bb9ff;
+      --accent-soft: rgba(91, 185, 255, 0.14);
+      --success: #3fd28f;
+      --warn: #ffbf47;
+      --danger: #ff6a6a;
+      --border: #33425b;
+      --shadow: 0 14px 40px rgba(0, 0, 0, 0.24);
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top right, rgba(91, 185, 255, 0.1), transparent 28%),
+        linear-gradient(180deg, #0c1119 0%, #111826 100%);
+      color: var(--text);
+    }
+
+    .page {
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    h1, h2, h3 { margin: 0; }
+    p, .hint, .small { margin: 0; color: var(--muted); }
+    .small { font-size: 12px; }
+
+    .hero {
+      display: grid;
+      gap: 14px;
+    }
+
+    .toolbar, .inline-actions, .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .toolbar {
+      justify-content: flex-start;
+    }
+
+    .status-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+
+    .status-card {
+      display: grid;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+      width: fit-content;
+    }
+
+    .pill.running {
+      color: var(--success);
+      border-color: rgba(63, 210, 143, 0.4);
+      background: rgba(63, 210, 143, 0.08);
+    }
+
+    .pill.warning {
+      color: var(--warn);
+    }
+
+    button {
+      border: 0;
+      border-radius: 11px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 700;
+      transition: transform 0.15s ease, opacity 0.15s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    .primary { background: var(--accent); color: #08121b; }
+    .secondary { background: #31435e; color: var(--text); }
+    .warning { background: var(--warn); color: #261800; }
+    .danger { background: var(--danger); color: #330a0a; }
+    .ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    input, select, textarea {
+      width: 100%;
+      background: #0f1724;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 11px;
+      font: inherit;
+    }
+
+    textarea {
+      min-height: 76px;
+      resize: vertical;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(91, 185, 255, 0.12);
+    }
+
+    .banner {
+      border-radius: 14px;
+      padding: 12px 14px;
+      border: 1px solid transparent;
+      white-space: pre-wrap;
+    }
+
+    .banner.info {
+      background: #1d2635;
+      border-color: #31435d;
+    }
+
+    .banner.success {
+      background: rgba(63, 210, 143, 0.12);
+      border-color: rgba(63, 210, 143, 0.48);
+    }
+
+    .banner.error {
+      background: rgba(255, 106, 106, 0.12);
+      border-color: rgba(255, 106, 106, 0.48);
+    }
+
+    .server-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      font-size: 13px;
+      color: #bfd0ee;
+    }
+
+    .stations-table-wrap,
+    .points-table-wrap {
+      overflow: auto;
+      margin-top: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      border-bottom: 1px solid #2a364a;
+      padding: 12px 8px;
+      text-align: left;
+      vertical-align: middle;
+      font-size: 14px;
+    }
+
+    th {
+      color: #bfd0ee;
+      font-size: 12px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .stations-table th:last-child,
+    .stations-table td:last-child {
+      width: 120px;
+    }
+
+    .points-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.95fr);
+      gap: 18px;
+      margin-top: 16px;
+      align-items: start;
+    }
+
+    .subpanel {
+      background: var(--panel-strong);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .info-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .info-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      display: grid;
+      gap: 6px;
+    }
+
+    .points-table tbody tr {
+      cursor: pointer;
+      transition: background 0.16s ease;
+    }
+
+    .points-table tbody tr:hover {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .points-table tbody tr.selected {
+      background: rgba(91, 185, 255, 0.1);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .cell-ellipsis {
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .type-block {
+      display: grid;
+      gap: 4px;
+      min-width: 210px;
+    }
+
+    .type-title {
+      color: var(--text);
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    .type-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      width: fit-content;
+      white-space: nowrap;
+    }
+
+    .badge.category-telemetry { background: rgba(91, 185, 255, 0.14); color: #8bd0ff; }
+    .badge.category-teleindication { background: rgba(63, 210, 143, 0.14); color: #8df0bb; }
+    .badge.category-telecontrol { background: rgba(255, 191, 71, 0.16); color: #ffd687; }
+    .badge.category-teleadjust { background: rgba(216, 127, 255, 0.14); color: #ebb7ff; }
+
+    .badge.quality-good { background: rgba(63, 210, 143, 0.16); color: #8df0bb; }
+    .badge.quality-bad { background: rgba(255, 106, 106, 0.15); color: #ff9f9f; }
+
+    .points-detail {
+      display: grid;
+      gap: 14px;
+      position: sticky;
+      top: 18px;
+    }
+
+    .detail-empty {
+      display: grid;
+      gap: 8px;
+      min-height: 280px;
+      place-content: center;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .detail-section {
+      display: grid;
+      gap: 12px;
+      border-top: 1px solid #29364b;
+      padding-top: 12px;
+    }
+
+    .type-help {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 12px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(91, 185, 255, 0.25);
+    }
+
+    .type-help strong {
+      font-size: 14px;
+    }
+
+    .inline-note {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .events {
+      max-height: 360px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .event {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #121b29;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+    }
+
+    @media (max-width: 1180px) {
+      .points-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .points-detail {
+        position: static;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        padding: 16px;
+      }
+
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card hero">
+      <div>
+        <h1>OpenEMS IEC104 Test Server</h1>
+        <p>这是辅助联调用的 IEC104 测试上位机。保存配置时，如果 CA / IOA / Type / Type ID 等结构字段变化，运行中的 Server 会自动重启并按新定义生效。</p>
+      </div>
+      <div class="toolbar">
+        <button class="secondary" id="importCsvBtn">导入 iec104_mapping.csv</button>
+        <button class="primary" id="saveBtn">保存配置</button>
+        <button class="secondary" id="startBtn">启动 Server</button>
+        <button class="warning" id="restartBtn">重启 Server</button>
+        <button class="danger" id="stopBtn">停止 Server</button>
+        <button class="ghost" id="randomizeBtn">随机波动监视点</button>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <div class="card status-card">
+        <h3>运行状态</h3>
+        <div class="pill" id="runningPill">未运行</div>
+      </div>
+      <div class="card status-card">
+        <h3>监听地址</h3>
+        <div class="pill" id="endpointPill">-</div>
+      </div>
+      <div class="card status-card">
+        <h3>站点 / 点位</h3>
+        <div class="pill" id="countPill">-</div>
+      </div>
+      <div class="card status-card">
+        <h3>保存结果</h3>
+        <div class="pill warning" id="savePill">未保存</div>
+      </div>
+    </div>
+
+    <div class="banner info" id="messageBox">配置尚未加载。</div>
+
+    <div class="card">
+      <div class="inline-actions">
+        <h2>Server</h2>
+      </div>
+      <div class="server-grid">
+        <div class="field">
+          <label for="server_name">Name</label>
+          <input id="server_name" />
+        </div>
+        <div class="field">
+          <label for="server_ip">IP</label>
+          <input id="server_ip" />
+        </div>
+        <div class="field">
+          <label for="server_port">Port</label>
+          <input id="server_port" type="number" />
+        </div>
+        <div class="field">
+          <label for="server_tick_rate_ms">Tick (ms)</label>
+          <input id="server_tick_rate_ms" type="number" />
+        </div>
+        <div class="field">
+          <label for="server_ui_host">UI Host</label>
+          <input id="server_ui_host" />
+        </div>
+        <div class="field">
+          <label for="server_ui_port">UI Port</label>
+          <input id="server_ui_port" type="number" />
+        </div>
+        <div class="field">
+          <label for="server_force_command_failure">命令响应</label>
+          <select id="server_force_command_failure">
+            <option value="false">默认成功</option>
+            <option value="true">强制失败</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="inline-actions">
+        <h2>Stations</h2>
+        <button class="secondary" id="addStationBtn">新增站点</button>
+      </div>
+      <div class="stations-table-wrap">
+        <table class="stations-table">
+          <thead>
+            <tr>
+              <th>Common Address</th>
+              <th>Name</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="stationsBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="inline-actions">
+        <h2>Points</h2>
+        <button class="secondary" id="addPointBtn">新增点位</button>
+      </div>
+      <p class="hint">左侧主表看关键字段，右侧详情区编辑完整定义。改值会立即写入运行态；发送会按当前运行定义发报文；结构字段保存后会自动重启生效。</p>
+
+      <div class="info-strip">
+        <div class="info-card">
+          <strong>监视点</strong>
+          <span class="small">常见类型：单点、双点、归一化值、标度化值、短浮点。适合总召、周期上送和手动发值。</span>
+        </div>
+        <div class="info-card">
+          <strong>控制点</strong>
+          <span class="small">常见类型：单点命令、双点命令、设点命令。可通过 Related IOA 模拟“遥控后回读”。</span>
+        </div>
+        <div class="info-card">
+          <strong>Type 速览</strong>
+          <span class="small">例如：`M_ME_NC_1 · 短浮点遥测`、`M_DP_NA_1 · 双点遥信`，不必再翻手册对照。</span>
+        </div>
+      </div>
+
+      <div class="points-layout">
+        <div class="subpanel">
+          <div class="inline-actions">
+            <h3>主表</h3>
+            <span class="small" id="pointsSummary">0 个点</span>
+          </div>
+          <div class="points-table-wrap">
+            <table class="points-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>CA</th>
+                  <th>IOA</th>
+                  <th>Type</th>
+                  <th>Category</th>
+                  <th>Value</th>
+                  <th>Quality</th>
+                  <th>Auto</th>
+                  <th>Writable</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="pointsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="points-detail subpanel" id="pointDetailPanel">
+          <div class="detail-empty" id="pointDetailEmpty">
+            <h3>选择一个点位</h3>
+            <p>从左侧主表中选中一个点，右侧将显示完整定义与类型说明。</p>
+          </div>
+
+          <div id="pointDetailContent" style="display:none;">
+            <div class="detail-header">
+              <div>
+                <h3 id="detailTitle">点位详情</h3>
+                <p class="small" id="detailSubtitle">-</p>
+              </div>
+              <div class="row-actions">
+                <button class="secondary" id="detailUpdateBtn" type="button">改值</button>
+                <button class="warning" id="detailTransmitBtn" type="button">发送</button>
+                <button class="danger" id="detailDeleteBtn" type="button">删除</button>
+              </div>
+            </div>
+
+            <div class="type-help">
+              <strong id="typeHelpTitle">-</strong>
+              <span id="typeHelpDesc" class="small">-</span>
+              <span id="typeHelpUsage" class="small">-</span>
+            </div>
+
+            <div class="detail-section">
+              <h3>基础定义</h3>
+              <div class="detail-grid">
+                <div class="field">
+                  <label for="detail_id">ID</label>
+                  <input id="detail_id" />
+                </div>
+                <div class="field">
+                  <label for="detail_station_common_address">CA</label>
+                  <input id="detail_station_common_address" type="number" />
+                </div>
+                <div class="field">
+                  <label for="detail_ioa">IOA</label>
+                  <input id="detail_ioa" type="number" />
+                </div>
+                <div class="field">
+                  <label for="detail_type_id">Type ID</label>
+                  <input id="detail_type_id" type="number" />
+                  <span class="inline-note">修改后会自动联动 Type 说明。</span>
+                </div>
+                <div class="field">
+                  <label for="detail_type">Type</label>
+                  <select id="detail_type"></select>
+                </div>
+                <div class="field">
+                  <label for="detail_category">Category</label>
+                  <select id="detail_category"></select>
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <h3>运行行为</h3>
+              <div class="detail-grid">
+                <div class="field">
+                  <label for="detail_value">Value</label>
+                  <input id="detail_value" />
+                </div>
+                <div class="field">
+                  <label for="detail_quality">Quality</label>
+                  <select id="detail_quality"></select>
+                </div>
+                <div class="field">
+                  <label for="detail_report_ms">Report (ms)</label>
+                  <input id="detail_report_ms" type="number" />
+                </div>
+                <div class="field">
+                  <label for="detail_auto_transmit">Auto Transmit</label>
+                  <select id="detail_auto_transmit"></select>
+                </div>
+                <div class="field">
+                  <label for="detail_writable">Writable</label>
+                  <select id="detail_writable"></select>
+                </div>
+                <div class="field">
+                  <label for="detail_related_ioa">Related IOA</label>
+                  <input id="detail_related_ioa" />
+                </div>
+              </div>
+            </div>
+
+            <div class="detail-section">
+              <h3>说明信息</h3>
+              <div class="detail-grid">
+                <div class="field">
+                  <label for="detail_scale">Scale</label>
+                  <input id="detail_scale" />
+                </div>
+                <div class="field">
+                  <label for="detail_description">Description</label>
+                  <textarea id="detail_description"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Events</h2>
+      <div class="events" id="eventsBox"></div>
+    </div>
+  </div>
+
+  <script>
+    const TYPE_METADATA = {
+      1: { name: "M_SP_NA_1", label: "单点遥信", usage: "单点开关量，不带时标。适合 on/off 状态。" },
+      3: { name: "M_DP_NA_1", label: "双点遥信", usage: "双点状态，不带时标。适合分合位、中间态。" },
+      9: { name: "M_ME_NA_1", label: "归一化遥测", usage: "归一化测量值。适合比例类或内部归一化值。" },
+      11: { name: "M_ME_NB_1", label: "标度化遥测", usage: "标度化整数测量值。适合定标后的整数遥测。" },
+      13: { name: "M_ME_NC_1", label: "短浮点遥测", usage: "IEEE 754 短浮点值。适合功率、电压、频率等模拟量。" },
+      45: { name: "C_SC_NA_1", label: "单点命令", usage: "单点遥控命令。适合启停、投退等开关控制。" },
+      46: { name: "C_DC_NA_1", label: "双点命令", usage: "双点遥控命令。适合分/合等双态控制。" },
+      48: { name: "C_SE_NA_1", label: "归一化设点", usage: "归一化设点命令。适合内部归一化参数设置。" },
+      49: { name: "C_SE_NB_1", label: "标度化设点", usage: "标度化设点命令。适合整数型参数下发。" },
+      50: { name: "C_SE_NC_1", label: "短浮点设点", usage: "短浮点设点命令。适合功率、限值等实数控制。" }
+    };
+
+    const TYPE_NAME_TO_ID = Object.fromEntries(
+      Object.entries(TYPE_METADATA).map(([id, meta]) => [meta.name, Number(id)])
+    );
+    const TYPE_IDS = Object.keys(TYPE_METADATA).map(Number);
+    const CATEGORY_OPTIONS = ["telemetry", "teleindication", "telecontrol", "teleadjust"];
+    const QUALITY_OPTIONS = ["GOOD", "INVALID", "BLOCKED", "SUBSTITUTED", "NON_TOPICAL"];
+
+    const state = {
+      config: null,
+      status: null,
+      selectedPointId: null
+    };
+
+    const detailFields = [
+      "id",
+      "station_common_address",
+      "ioa",
+      "type_id",
+      "type",
+      "category",
+      "value",
+      "quality",
+      "report_ms",
+      "auto_transmit",
+      "writable",
+      "related_ioa",
+      "scale",
+      "description"
+    ];
+
+    function showMessage(text, kind = "info") {
+      const box = document.getElementById("messageBox");
+      box.className = `banner ${kind}`;
+      box.textContent = text;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "Request failed");
+      }
+      return payload;
+    }
+
+    function numberValue(value, fallback = 0) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function boolSelectHtml(current) {
+      return `
+        <option value="true" ${current ? "selected" : ""}>true</option>
+        <option value="false" ${!current ? "selected" : ""}>false</option>
+      `;
+    }
+
+    function typeSelectHtml(currentTypeName) {
+      return TYPE_IDS.map((typeId) => {
+        const meta = TYPE_METADATA[typeId];
+        const selected = meta.name === currentTypeName ? "selected" : "";
+        return `<option value="${meta.name}" ${selected}>${meta.name} · ${meta.label}</option>`;
+      }).join("");
+    }
+
+    function categoryBadge(category) {
+      return `<span class="badge category-${category}">${category}</span>`;
+    }
+
+    function qualityBadge(quality) {
+      const isGood = quality === "GOOD";
+      return `<span class="badge ${isGood ? "quality-good" : "quality-bad"}">${quality}</span>`;
+    }
+
+    function typeDisplay(typeId, typeName) {
+      const meta = TYPE_METADATA[typeId] || { name: typeName || "-", label: "未知类型", usage: "请检查 Type ID 与 Type 是否匹配。" };
+      const effectiveType = typeName || meta.name;
+      return `
+        <div class="type-block" title="${effectiveType} · ${meta.label}">
+          <span class="type-title">${effectiveType} · ${meta.label}</span>
+          <span class="type-meta">Type ID ${typeId} · ${meta.usage}</span>
+        </div>
+      `;
+    }
+
+    function cloneConfig() {
+      return structuredClone(state.config);
+    }
+
+    function getSelectedPoint() {
+      return (state.config?.points || []).find((point) => point.id === state.selectedPointId) || null;
+    }
+
+    function getPointById(pointId) {
+      return (state.config?.points || []).find((point) => point.id === pointId) || null;
+    }
+
+    function updatePointInState(pointId, patch) {
+      const point = getPointById(pointId);
+      if (!point) {
+        return;
+      }
+      Object.assign(point, patch);
+    }
+
+    function ensureSelectedPoint() {
+      const points = state.config?.points || [];
+      if (!points.length) {
+        state.selectedPointId = null;
+        return;
+      }
+      if (!points.some((point) => point.id === state.selectedPointId)) {
+        state.selectedPointId = points[0].id;
+      }
+    }
+
+    function syncDetailToState() {
+      const point = getSelectedPoint();
+      if (!point) {
+        return;
+      }
+      const relatedRaw = document.getElementById("detail_related_ioa").value.trim();
+      Object.assign(point, {
+        id: document.getElementById("detail_id").value.trim(),
+        station_common_address: numberValue(document.getElementById("detail_station_common_address").value, 1),
+        ioa: numberValue(document.getElementById("detail_ioa").value, 0),
+        type_id: numberValue(document.getElementById("detail_type_id").value, 13),
+        type: document.getElementById("detail_type").value,
+        category: document.getElementById("detail_category").value,
+        value: document.getElementById("detail_value").value,
+        quality: document.getElementById("detail_quality").value,
+        report_ms: numberValue(document.getElementById("detail_report_ms").value, 1000),
+        auto_transmit: document.getElementById("detail_auto_transmit").value === "true",
+        writable: document.getElementById("detail_writable").value === "true",
+        related_ioa: relatedRaw === "" ? null : numberValue(relatedRaw, 0),
+        scale: Number(document.getElementById("detail_scale").value || 1),
+        description: document.getElementById("detail_description").value
+      });
+      state.selectedPointId = point.id;
+    }
+
+    function collectConfigFromForm() {
+      syncDetailToState();
+      const config = cloneConfig();
+      config.server = {
+        name: document.getElementById("server_name").value.trim(),
+        ip: document.getElementById("server_ip").value.trim(),
+        port: numberValue(document.getElementById("server_port").value, 2404),
+        tick_rate_ms: numberValue(document.getElementById("server_tick_rate_ms").value, 100),
+        ui_host: document.getElementById("server_ui_host").value.trim(),
+        ui_port: numberValue(document.getElementById("server_ui_port").value, 8094),
+        force_command_failure: document.getElementById("server_force_command_failure").value === "true"
+      };
+
+      config.stations = Array.from(document.querySelectorAll("#stationsBody tr")).map((row) => ({
+        common_address: numberValue(row.querySelector("[data-field='common_address']").value, 1),
+        name: row.querySelector("[data-field='name']").value.trim()
+      }));
+
+      config.points = config.points.map((point) => ({
+        ...point,
+        type_id: numberValue(point.type_id, 13),
+        station_common_address: numberValue(point.station_common_address, 1),
+        ioa: numberValue(point.ioa, 0),
+        report_ms: numberValue(point.report_ms, 1000),
+        related_ioa: point.related_ioa === null || point.related_ioa === "" ? null : numberValue(point.related_ioa, 0),
+        scale: Number(point.scale || 1)
+      }));
+
+      return config;
+    }
+
+    function renderServer(server) {
+      document.getElementById("server_name").value = server.name || "";
+      document.getElementById("server_ip").value = server.ip || "";
+      document.getElementById("server_port").value = server.port ?? 2404;
+      document.getElementById("server_tick_rate_ms").value = server.tick_rate_ms ?? 100;
+      document.getElementById("server_ui_host").value = server.ui_host || "127.0.0.1";
+      document.getElementById("server_ui_port").value = server.ui_port ?? 8094;
+      document.getElementById("server_force_command_failure").value = String(!!server.force_command_failure);
+    }
+
+    function renderStations(stations) {
+      const body = document.getElementById("stationsBody");
+      body.innerHTML = "";
+      stations.forEach((station, index) => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td><input data-field="common_address" type="number" value="${station.common_address}" /></td>
+          <td><input data-field="name" value="${station.name || ""}" /></td>
+          <td><button class="danger" type="button">删除</button></td>
+        `;
+        row.querySelector("button").onclick = () => {
+          state.config.stations.splice(index, 1);
+          renderStations(state.config.stations);
+        };
+        body.appendChild(row);
+      });
+    }
+
+    function renderPointRows() {
+      const body = document.getElementById("pointsBody");
+      const points = state.config?.points || [];
+      body.innerHTML = "";
+      document.getElementById("pointsSummary").textContent = `${points.length} 个点`;
+
+      points.forEach((point) => {
+        const row = document.createElement("tr");
+        const selected = point.id === state.selectedPointId;
+        row.className = selected ? "selected" : "";
+        row.dataset.pointId = point.id;
+        row.innerHTML = `
+          <td><div class="cell-ellipsis" title="${point.id}">${point.id}</div></td>
+          <td>${point.station_common_address ?? 1}</td>
+          <td>${point.ioa ?? 0}</td>
+          <td>${typeDisplay(point.type_id ?? 13, point.type || "M_ME_NC_1")}</td>
+          <td>${categoryBadge(point.category || "telemetry")}</td>
+          <td><div class="cell-ellipsis" title="${point.value ?? 0}">${point.value ?? 0}</div></td>
+          <td>${qualityBadge(point.quality || "GOOD")}</td>
+          <td>${point.auto_transmit ? "true" : "false"}</td>
+          <td>${point.writable ? "true" : "false"}</td>
+          <td class="row-actions">
+            <button class="secondary" type="button" data-action="update">改值</button>
+            <button class="warning" type="button" data-action="transmit">发送</button>
+            <button class="danger" type="button" data-action="delete">删</button>
+          </td>
+        `;
+        row.onclick = (event) => {
+          if (event.target.closest("button")) {
+            return;
+          }
+          selectPoint(point.id);
+        };
+        row.querySelector("[data-action='update']").onclick = (event) => {
+          event.stopPropagation();
+          selectPoint(point.id);
+          updateCurrentPointValue().catch((error) => showMessage(error.message, "error"));
+        };
+        row.querySelector("[data-action='transmit']").onclick = (event) => {
+          event.stopPropagation();
+          selectPoint(point.id);
+          transmitCurrentPoint().catch((error) => showMessage(error.message, "error"));
+        };
+        row.querySelector("[data-action='delete']").onclick = (event) => {
+          event.stopPropagation();
+          deletePoint(point.id);
+        };
+        body.appendChild(row);
+      });
+    }
+
+    function renderPointDetail() {
+      ensureSelectedPoint();
+      const point = getSelectedPoint();
+      const empty = document.getElementById("pointDetailEmpty");
+      const content = document.getElementById("pointDetailContent");
+      if (!point) {
+        empty.style.display = "grid";
+        content.style.display = "none";
+        return;
+      }
+
+      empty.style.display = "none";
+      content.style.display = "grid";
+
+      document.getElementById("detailTitle").textContent = point.id || "未命名点位";
+      document.getElementById("detailSubtitle").textContent = `CA=${point.station_common_address} · IOA=${point.ioa} · 保存后结构变更会自动重启生效`;
+
+      document.getElementById("detail_id").value = point.id || "";
+      document.getElementById("detail_station_common_address").value = point.station_common_address ?? 1;
+      document.getElementById("detail_ioa").value = point.ioa ?? 0;
+      document.getElementById("detail_type_id").value = point.type_id ?? 13;
+      document.getElementById("detail_type").innerHTML = typeSelectHtml(point.type || "M_ME_NC_1");
+      document.getElementById("detail_category").innerHTML = CATEGORY_OPTIONS.map((item) => `<option value="${item}" ${item === point.category ? "selected" : ""}>${item}</option>`).join("");
+      document.getElementById("detail_value").value = point.value ?? 0;
+      document.getElementById("detail_quality").innerHTML = QUALITY_OPTIONS.map((item) => `<option value="${item}" ${item === point.quality ? "selected" : ""}>${item}</option>`).join("");
+      document.getElementById("detail_report_ms").value = point.report_ms ?? 1000;
+      document.getElementById("detail_auto_transmit").innerHTML = boolSelectHtml(!!point.auto_transmit);
+      document.getElementById("detail_writable").innerHTML = boolSelectHtml(!!point.writable);
+      document.getElementById("detail_related_ioa").value = point.related_ioa ?? "";
+      document.getElementById("detail_scale").value = point.scale ?? 1;
+      document.getElementById("detail_description").value = point.description || "";
+
+      renderTypeHelp(point.type_id, point.type);
+      renderPointRows();
+    }
+
+    function renderTypeHelp(typeId, typeName) {
+      const numericTypeId = numberValue(typeId, TYPE_NAME_TO_ID[typeName] || 13);
+      const meta = TYPE_METADATA[numericTypeId] || {
+        name: typeName || "-",
+        label: "未知类型",
+        usage: "当前 Type ID 与 Type 没有命中内置说明，请检查配置是否匹配。"
+      };
+      document.getElementById("typeHelpTitle").textContent = `${meta.name} · ${meta.label}`;
+      document.getElementById("typeHelpDesc").textContent = `Type ID ${numericTypeId}`;
+      document.getElementById("typeHelpUsage").textContent = meta.usage;
+    }
+
+    function selectPoint(pointId) {
+      syncDetailToState();
+      state.selectedPointId = pointId;
+      renderPointDetail();
+    }
+
+    function deletePoint(pointId) {
+      state.config.points = state.config.points.filter((point) => point.id !== pointId);
+      if (state.selectedPointId === pointId) {
+        state.selectedPointId = state.config.points[0]?.id || null;
+      }
+      renderPointRows();
+      renderPointDetail();
+      showMessage(`已从页面移除点位 ${pointId}。保存后会写入配置。`, "success");
+    }
+
+    async function refreshStatus() {
+      const status = await api("/api/status");
+      state.status = status;
+      const runningPill = document.getElementById("runningPill");
+      runningPill.textContent = status.running ? "运行中" : "未运行";
+      runningPill.className = `pill ${status.running ? "running" : ""}`;
+      document.getElementById("endpointPill").textContent = `${status.server.ip}:${status.server.port}`;
+      document.getElementById("countPill").textContent = `${status.station_count} 个站 / ${status.point_count} 个点`;
+    }
+
+    async function refreshEvents() {
+      const payload = await api("/api/events");
+      const box = document.getElementById("eventsBox");
+      box.innerHTML = "";
+      if (!payload.items?.length) {
+        box.innerHTML = `<div class="event">暂无事件。</div>`;
+        return;
+      }
+      payload.items.forEach((item) => {
+        const div = document.createElement("div");
+        div.className = "event";
+        div.textContent = `[${item.time}] [${item.category}] ${item.message}`;
+        box.appendChild(div);
+      });
+    }
+
+    async function loadConfig() {
+      const config = await api("/api/config");
+      state.config = config;
+      ensureSelectedPoint();
+      renderServer(config.server || {});
+      renderStations(config.stations || []);
+      renderPointRows();
+      renderPointDetail();
+      document.getElementById("savePill").textContent = "已加载";
+      showMessage("配置已加载。左侧主表浏览点位，右侧详情区编辑完整定义。", "success");
+    }
+
+    async function saveConfig() {
+      const config = collectConfigFromForm();
+      const payload = await api("/api/config/save", {
+        method: "POST",
+        body: JSON.stringify({ config })
+      });
+      state.config = payload.config;
+      ensureSelectedPoint();
+      renderServer(payload.config.server || {});
+      renderStations(payload.config.stations || []);
+      renderPointRows();
+      renderPointDetail();
+      await refreshStatus();
+      await refreshEvents();
+
+      const extra = payload.restarted
+        ? "检测到结构字段变化，已自动重启 Server。"
+        : payload.restart_needed
+          ? "存在结构变更，但当前 Server 未运行；下次启动时按新配置生效。"
+          : "仅运行值或普通配置更新，无需重启。";
+
+      document.getElementById("savePill").textContent = payload.restarted ? "已保存并重启" : "已保存";
+      showMessage(`配置已保存到测试工具 JSON。\n${extra}`, "success");
+    }
+
+    async function importCsv() {
+      const payload = await api("/api/config/import-csv", {
+        method: "POST",
+        body: JSON.stringify({ csv_path: null })
+      });
+      state.config = payload.config;
+      ensureSelectedPoint();
+      renderServer(payload.config.server || {});
+      renderStations(payload.config.stations || []);
+      renderPointRows();
+      renderPointDetail();
+      await refreshStatus();
+      await refreshEvents();
+
+      document.getElementById("savePill").textContent = payload.restarted ? "导入并重启" : "已导入";
+      showMessage(
+        payload.restarted
+          ? "已从 iec104_mapping.csv 导入配置，并自动重启 Server。"
+          : "已从 iec104_mapping.csv 导入配置。",
+        "success"
+      );
+    }
+
+    async function updateCurrentPointValue() {
+      syncDetailToState();
+      const point = getSelectedPoint();
+      if (!point) {
+        throw new Error("请先选择一个点位");
+      }
+      const payload = await api("/api/point/value", {
+        method: "POST",
+        body: JSON.stringify({
+          point_id: point.id,
+          value: point.value,
+          quality: point.quality
+        })
+      });
+      showMessage(`运行值已更新：${payload.point_id} = ${payload.value}`, "success");
+      await refreshEvents();
+      renderPointRows();
+      renderPointDetail();
+    }
+
+    async function transmitCurrentPoint() {
+      syncDetailToState();
+      const point = getSelectedPoint();
+      if (!point) {
+        throw new Error("请先选择一个点位");
+      }
+      const payload = await api("/api/point/transmit", {
+        method: "POST",
+        body: JSON.stringify({ point_id: point.id, cause: "SPONTANEOUS" })
+      });
+      const runtime = payload.runtime_definition || {};
+      showMessage(
+        `已发送点 ${payload.point_id}，当前运行定义 CA=${runtime.station_common_address ?? "-"} IOA=${runtime.ioa ?? "-"} Type=${runtime.type ?? "-"}`,
+        "success"
+      );
+      await refreshEvents();
+    }
+
+    function addStation() {
+      const stations = state.config?.stations || [];
+      const nextCa = stations.length ? Math.max(...stations.map((item) => Number(item.common_address) || 0)) + 1 : 1;
+      stations.push({ common_address: nextCa, name: `Station ${nextCa}` });
+      renderStations(stations);
+      showMessage(`已新增站点 Station ${nextCa}。保存后写入配置。`, "success");
+    }
+
+    function addPoint() {
+      syncDetailToState();
+      const points = state.config?.points || [];
+      const nextIndex = points.length + 1;
+      const point = {
+        id: `point-${nextIndex}`,
+        station_common_address: state.config?.stations?.[0]?.common_address || 1,
+        ioa: nextIndex,
+        type_id: 13,
+        type: "M_ME_NC_1",
+        category: "telemetry",
+        value: 0,
+        quality: "GOOD",
+        report_ms: 1000,
+        auto_transmit: true,
+        writable: false,
+        related_ioa: null,
+        scale: 1,
+        description: ""
+      };
+      points.push(point);
+      state.selectedPointId = point.id;
+      renderPointRows();
+      renderPointDetail();
+      showMessage(`已新增点位 ${point.id}。`, "success");
+    }
+
+    function bindDetailEvents() {
+      detailFields.forEach((field) => {
+        const element = document.getElementById(`detail_${field}`);
+        if (!element) {
+          return;
+        }
+        element.addEventListener("input", () => {
+          syncDetailToState();
+          if (field === "type_id" || field === "type") {
+            syncTypeFields(field);
+          }
+          renderPointRows();
+          renderTypeHelp(
+            document.getElementById("detail_type_id").value,
+            document.getElementById("detail_type").value
+          );
+          const point = getSelectedPoint();
+          if (point) {
+            document.getElementById("detailTitle").textContent = point.id || "未命名点位";
+            document.getElementById("detailSubtitle").textContent = `CA=${point.station_common_address} · IOA=${point.ioa} · 保存后结构变更会自动重启生效`;
+          }
+        });
+        element.addEventListener("change", () => {
+          syncDetailToState();
+          if (field === "type_id" || field === "type") {
+            syncTypeFields(field);
+          }
+          renderPointRows();
+        });
+      });
+
+      document.getElementById("detailUpdateBtn").onclick = () => updateCurrentPointValue().catch((error) => showMessage(error.message, "error"));
+      document.getElementById("detailTransmitBtn").onclick = () => transmitCurrentPoint().catch((error) => showMessage(error.message, "error"));
+      document.getElementById("detailDeleteBtn").onclick = () => {
+        const point = getSelectedPoint();
+        if (point) {
+          deletePoint(point.id);
+        }
+      };
+    }
+
+    function syncTypeFields(sourceField) {
+      const typeIdInput = document.getElementById("detail_type_id");
+      const typeSelect = document.getElementById("detail_type");
+      if (sourceField === "type_id") {
+        const typeId = numberValue(typeIdInput.value, 13);
+        const meta = TYPE_METADATA[typeId];
+        if (meta) {
+          typeSelect.value = meta.name;
+        }
+      } else {
+        const typeName = typeSelect.value;
+        const typeId = TYPE_NAME_TO_ID[typeName];
+        if (typeId !== undefined) {
+          typeIdInput.value = typeId;
+        }
+      }
+      syncDetailToState();
+      const point = getSelectedPoint();
+      if (point) {
+        renderTypeHelp(point.type_id, point.type);
+        renderPointRows();
+      }
+    }
+
+    async function bindAction(buttonId, path, successText) {
+      document.getElementById(buttonId).onclick = async () => {
+        await api(path, { method: "POST", body: "{}" });
+        await refreshStatus();
+        await refreshEvents();
+        showMessage(successText, "success");
+      };
+    }
+
+    async function randomizePoints() {
+      await api("/api/points/randomize", { method: "POST", body: "{}" });
+      await refreshEvents();
+      showMessage("已随机更新运行中的监视点值。", "success");
+    }
+
+    async function init() {
+      document.getElementById("detail_type").innerHTML = typeSelectHtml("M_ME_NC_1");
+      document.getElementById("detail_category").innerHTML = CATEGORY_OPTIONS.map((item) => `<option value="${item}">${item}</option>`).join("");
+      document.getElementById("detail_quality").innerHTML = QUALITY_OPTIONS.map((item) => `<option value="${item}">${item}</option>`).join("");
+      document.getElementById("detail_auto_transmit").innerHTML = boolSelectHtml(true);
+      document.getElementById("detail_writable").innerHTML = boolSelectHtml(false);
+      bindDetailEvents();
+
+      try {
+        await loadConfig();
+        await refreshStatus();
+        await refreshEvents();
+      } catch (error) {
+        showMessage(error.message, "error");
+      }
+
+      document.getElementById("saveBtn").onclick = () => saveConfig().catch((error) => showMessage(error.message, "error"));
+      document.getElementById("importCsvBtn").onclick = () => importCsv().catch((error) => showMessage(error.message, "error"));
+      document.getElementById("addStationBtn").onclick = addStation;
+      document.getElementById("addPointBtn").onclick = addPoint;
+      document.getElementById("randomizeBtn").onclick = () => randomizePoints().catch((error) => showMessage(error.message, "error"));
+
+      await bindAction("startBtn", "/api/server/start", "Server 已启动。");
+      await bindAction("restartBtn", "/api/server/restart", "Server 已重启。");
+      await bindAction("stopBtn", "/api/server/stop", "Server 已停止。");
+
+      setInterval(() => {
+        refreshStatus().catch(() => {});
+        refreshEvents().catch(() => {});
+      }, 1500);
+    }
+
+    init();
+  </script>
+</body>
+</html>
