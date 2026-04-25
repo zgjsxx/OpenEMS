@@ -27,10 +27,12 @@ from config_store import ConfigStore
 from db import Database
 from shm_reader import ShmReader
 
-WEB_DIR = Path(__file__).parent
-CONFIG_DIR = Path(__file__).parent.parent.parent / "config" / "tables"
-ALARM_FILE = Path("runtime") / "alarms_active.json"
-HISTORY_DIR = Path("runtime") / "history"
+WEB_DIR = Path(__file__).resolve().parent
+APP_ROOT = Path.cwd().resolve()
+RUNTIME_DIR = APP_ROOT / "runtime"
+CONFIG_DIR = APP_ROOT / "config" / "tables"
+ALARM_FILE = RUNTIME_DIR / "alarms_active.json"
+HISTORY_DIR = RUNTIME_DIR / "history"
 MIGRATIONS_DIR = WEB_DIR / "migrations"
 
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "admin": 3}
@@ -39,7 +41,7 @@ app = FastAPI(title="OpenEMS Operations Console")
 app.mount("/assets", StaticFiles(directory=str(WEB_DIR / "assets")), name="assets")
 
 _reader = ShmReader()
-_config_store = ConfigStore(CONFIG_DIR, backup_root=Path("runtime") / "config_backups")
+_config_store = ConfigStore(CONFIG_DIR, backup_root=RUNTIME_DIR / "config_backups")
 _db = Database(MIGRATIONS_DIR)
 _db_state: Dict[str, Any] = {"ok": False, "error": "Database not initialized."}
 
@@ -282,6 +284,9 @@ def _safe_audit(
 
 @app.on_event("startup")
 async def startup():
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNTIME_DIR / "config_backups").mkdir(parents=True, exist_ok=True)
     _reader.attach()
     global _db_state
     _db_state = _db.initialize()

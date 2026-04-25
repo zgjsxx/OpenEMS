@@ -57,5 +57,49 @@ target_link_libraries(openems-history PRIVATE
   openems_rt_db
 )
 
+set(OPENEMS_APP_TARGETS
+  openems-modbus-collector
+  openems-viewer
+  openems-alarm
+  openems-iec104-collector
+  openems-history
+)
+
+install(TARGETS ${OPENEMS_APP_TARGETS}
+  RUNTIME DESTINATION bin
+)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/
+  DESTINATION config
+)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/
+  DESTINATION web
+  FILES_MATCHING
+    PATTERN "*.py"
+    PATTERN "*.html"
+    PATTERN "*.css"
+    PATTERN "*.js"
+    PATTERN "*.sql"
+    PATTERN "*.txt"
+    PATTERN "*.md"
+    PATTERN "*.ps1"
+    PATTERN "__pycache__" EXCLUDE
+    PATTERN "install_scripts" EXCLUDE
+    PATTERN "*_local.ps1" EXCLUDE
+    PATTERN "init_admin_portal_db.ps1" EXCLUDE
+)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/install_scripts/
+  DESTINATION .
+  FILES_MATCHING PATTERN "*.ps1"
+)
+
+install(CODE [[
+  file(MAKE_DIRECTORY "${CMAKE_INSTALL_PREFIX}/runtime")
+  file(MAKE_DIRECTORY "${CMAKE_INSTALL_PREFIX}/runtime/history")
+  file(MAKE_DIRECTORY "${CMAKE_INSTALL_PREFIX}/runtime/config_backups")
+]])
+
 # Copy config files to build directory
 file(COPY ${CMAKE_SOURCE_DIR}/config DESTINATION ${CMAKE_BINARY_DIR})

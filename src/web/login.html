@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -18,7 +18,12 @@
     </div>
     <div class="form-row">
       <label for="password">密码</label>
-      <input id="password" type="password" value="admin123" autocomplete="current-password">
+      <div style="position:relative;">
+        <input id="password" type="password" value="" autocomplete="current-password" style="padding-right:48px;">
+        <button id="toggle-password-btn" type="button" aria-label="显示密码" title="显示密码" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);border:none;background:transparent;color:#9aa8bb;padding:4px 6px;cursor:pointer;font-size:18px;line-height:1;">
+          <span id="toggle-password-icon" aria-hidden="true">🙈</span>
+        </button>
+      </div>
     </div>
     <div class="toolbar compact">
       <button id="login-btn" style="width:100%;">登录</button>
@@ -50,7 +55,7 @@ async function login() {
     });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.error || "登录失败");
+      throw new Error(data.error || data.detail || "登录失败");
     }
     if (data.ok) {
       window.location.href = "/dashboard";
@@ -61,6 +66,16 @@ async function login() {
 }
 
 document.getElementById("login-btn").addEventListener("click", login);
+document.getElementById("toggle-password-btn").addEventListener("click", () => {
+  const passwordInput = document.getElementById("password");
+  const toggleBtn = document.getElementById("toggle-password-btn");
+  const icon = document.getElementById("toggle-password-icon");
+  const isVisible = passwordInput.type === "text";
+  passwordInput.type = isVisible ? "password" : "text";
+  toggleBtn.setAttribute("aria-label", isVisible ? "显示密码" : "隐藏密码");
+  toggleBtn.setAttribute("title", isVisible ? "显示密码" : "隐藏密码");
+  icon.textContent = isVisible ? "🙈" : "👁";
+});
 document.getElementById("password").addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     login();
