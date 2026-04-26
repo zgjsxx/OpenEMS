@@ -10,6 +10,12 @@ PROTOCOL_OPTIONS = ["modbus-tcp", "iec104"]
 DATA_TYPE_OPTIONS = ["bool", "int16", "uint16", "int32", "uint32", "float32", "int64", "uint64", "double"]
 BOOL_OPTIONS = ["false", "true"]
 LOG_LEVEL_OPTIONS = ["trace", "debug", "info", "warn", "error", "fatal"]
+ALARM_OPERATOR_OPTIONS = ["<", "<=", ">", ">=", "==", "!="]
+ALARM_SEVERITY_OPTIONS = ["info", "warning", "critical"]
+TOPOLOGY_NODE_TYPE_OPTIONS = ["grid", "bus", "breaker", "switch", "pv", "bess", "load", "meter", "transformer", "unknown"]
+TOPOLOGY_LINK_TYPE_OPTIONS = ["line", "breaker", "transformer", "virtual"]
+TOPOLOGY_TARGET_TYPE_OPTIONS = ["node", "link"]
+TOPOLOGY_BINDING_ROLE_OPTIONS = ["status", "power", "voltage", "current", "soc", "control", "alarm"]
 
 
 TABLE_SCHEMAS = [
@@ -125,6 +131,73 @@ TABLE_SCHEMAS = [
             {"name": "data_type", "label": "Data Type", "required": True, "type": "select", "options": DATA_TYPE_OPTIONS},
             {"name": "unit", "label": "Unit", "required": False, "type": "text"},
             {"name": "writable", "label": "Writable", "required": True, "type": "select", "options": BOOL_OPTIONS},
+        ],
+    },
+    {
+        "name": "alarm_rule",
+        "file": "alarm_rule.csv",
+        "title": "Alarm Rules",
+        "single_row": False,
+        "optional": True,
+        "primary_key": "id",
+        "columns": [
+            {"name": "id", "label": "Rule ID", "required": True, "type": "text"},
+            {"name": "point_id", "label": "Point ID", "required": True, "type": "select", "dynamic_options": "point_ids"},
+            {"name": "enabled", "label": "Enabled", "required": True, "type": "select", "options": BOOL_OPTIONS},
+            {"name": "operator", "label": "Operator", "required": True, "type": "select", "options": ALARM_OPERATOR_OPTIONS},
+            {"name": "threshold", "label": "Threshold", "required": True, "type": "number"},
+            {"name": "severity", "label": "Severity", "required": True, "type": "select", "options": ALARM_SEVERITY_OPTIONS},
+            {"name": "message", "label": "Message", "required": True, "type": "text"},
+        ],
+    },
+    {
+        "name": "topology_node",
+        "file": "topology_node.csv",
+        "title": "Topology Nodes",
+        "single_row": False,
+        "optional": True,
+        "primary_key": "id",
+        "columns": [
+            {"name": "id", "label": "Node ID", "required": True, "type": "text"},
+            {"name": "site_id", "label": "Site ID", "required": True, "type": "text"},
+            {"name": "name", "label": "Name", "required": True, "type": "text"},
+            {"name": "type", "label": "Type", "required": True, "type": "select", "options": TOPOLOGY_NODE_TYPE_OPTIONS},
+            {"name": "device_id", "label": "Device ID", "required": False, "type": "select", "dynamic_options": "device_ids"},
+            {"name": "x", "label": "X", "required": True, "type": "number"},
+            {"name": "y", "label": "Y", "required": True, "type": "number"},
+            {"name": "enabled", "label": "Enabled", "required": True, "type": "select", "options": BOOL_OPTIONS},
+        ],
+    },
+    {
+        "name": "topology_link",
+        "file": "topology_link.csv",
+        "title": "Topology Links",
+        "single_row": False,
+        "optional": True,
+        "primary_key": "id",
+        "columns": [
+            {"name": "id", "label": "Link ID", "required": True, "type": "text"},
+            {"name": "site_id", "label": "Site ID", "required": True, "type": "text"},
+            {"name": "source_node_id", "label": "Source Node", "required": True, "type": "select", "dynamic_options": "topology_node_ids"},
+            {"name": "target_node_id", "label": "Target Node", "required": True, "type": "select", "dynamic_options": "topology_node_ids"},
+            {"name": "type", "label": "Type", "required": True, "type": "select", "options": TOPOLOGY_LINK_TYPE_OPTIONS},
+            {"name": "enabled", "label": "Enabled", "required": True, "type": "select", "options": BOOL_OPTIONS},
+        ],
+    },
+    {
+        "name": "topology_binding",
+        "file": "topology_binding.csv",
+        "title": "Topology Bindings",
+        "single_row": False,
+        "optional": True,
+        "primary_key": "id",
+        "columns": [
+            {"name": "id", "label": "Binding ID", "required": True, "type": "text"},
+            {"name": "target_type", "label": "Target Type", "required": True, "type": "select", "options": TOPOLOGY_TARGET_TYPE_OPTIONS},
+            {"name": "target_id", "label": "Target ID", "required": True, "type": "select", "dynamic_options": "topology_target_ids"},
+            {"name": "point_id", "label": "Point ID", "required": True, "type": "select", "dynamic_options": "point_ids"},
+            {"name": "role", "label": "Role", "required": True, "type": "select", "options": TOPOLOGY_BINDING_ROLE_OPTIONS},
+            {"name": "label", "label": "Label", "required": False, "type": "text"},
         ],
     },
     {
@@ -320,14 +393,106 @@ class ConfigStore:
                     point_data_type_by_id[point_id] = data_type
                     point_writable_by_id[point_id] = writable
 
-                if device_id and device_id not in device_ids:
-                    add_error(table_name, "device_id must reference an existing device.", row_index, "device_id")
                 if data_type and data_type not in DATA_TYPE_OPTIONS:
                     add_error(table_name, "data_type must be one of the supported data types.", row_index, "data_type")
                 if writable not in {"true", "false"}:
                     add_error(table_name, "writable must be true or false.", row_index, "writable")
                 if table_name in {"telecontrol", "teleadjust"} and writable != "true":
                     add_error(table_name, "Control and adjustment points must be writable=true.", row_index, "writable")
+
+        alarm_rule_ids = set()
+        for row_index, row in enumerate(tables["alarm_rule"]):
+            rule_id = _trim(row.get("id"))
+            point_id = _trim(row.get("point_id"))
+            enabled = _bool_string(row.get("enabled"))
+            operator = _trim(row.get("operator"))
+            severity = _trim(row.get("severity"))
+
+            if rule_id in alarm_rule_ids:
+                add_error("alarm_rule", "Rule ID must be unique.", row_index, "id")
+            elif rule_id:
+                alarm_rule_ids.add(rule_id)
+            if point_id and point_id not in point_ids:
+                add_error("alarm_rule", "point_id must reference an existing point.", row_index, "point_id")
+            if enabled not in {"true", "false"}:
+                add_error("alarm_rule", "enabled must be true or false.", row_index, "enabled")
+            if operator and operator not in ALARM_OPERATOR_OPTIONS:
+                add_error("alarm_rule", "operator must be one of <, <=, >, >=, == or !=.", row_index, "operator")
+            if severity and severity not in ALARM_SEVERITY_OPTIONS:
+                add_error("alarm_rule", "severity must be info, warning or critical.", row_index, "severity")
+            self._validate_float("alarm_rule", row_index, "threshold", row.get("threshold"), add_error)
+
+        topology_node_ids = set()
+        for row_index, row in enumerate(tables["topology_node"]):
+            node_id = _trim(row.get("id"))
+            site_id = _trim(row.get("site_id"))
+            node_type = _trim(row.get("type"))
+            device_id = _trim(row.get("device_id"))
+            enabled = _bool_string(row.get("enabled"))
+
+            if node_id in topology_node_ids:
+                add_error("topology_node", "Node ID must be unique.", row_index, "id")
+            elif node_id:
+                topology_node_ids.add(node_id)
+            if site_id and site_id not in site_ids:
+                add_error("topology_node", "site_id must reference an existing site.", row_index, "site_id")
+            if node_type and node_type not in TOPOLOGY_NODE_TYPE_OPTIONS:
+                add_error("topology_node", "type must be one of the supported topology node types.", row_index, "type")
+            if device_id and device_id not in device_ids:
+                add_error("topology_node", "device_id must reference an enabled device. Leave it empty for a pure topology/test node.", row_index, "device_id")
+            self._validate_float("topology_node", row_index, "x", row.get("x"), add_error)
+            self._validate_float("topology_node", row_index, "y", row.get("y"), add_error)
+            if enabled not in {"true", "false"}:
+                add_error("topology_node", "enabled must be true or false.", row_index, "enabled")
+
+        topology_link_ids = set()
+        for row_index, row in enumerate(tables["topology_link"]):
+            link_id = _trim(row.get("id"))
+            site_id = _trim(row.get("site_id"))
+            source_node_id = _trim(row.get("source_node_id"))
+            target_node_id = _trim(row.get("target_node_id"))
+            link_type = _trim(row.get("type"))
+            enabled = _bool_string(row.get("enabled"))
+
+            if link_id in topology_link_ids:
+                add_error("topology_link", "Link ID must be unique.", row_index, "id")
+            elif link_id:
+                topology_link_ids.add(link_id)
+            if site_id and site_id not in site_ids:
+                add_error("topology_link", "site_id must reference an existing site.", row_index, "site_id")
+            if source_node_id and source_node_id not in topology_node_ids:
+                add_error("topology_link", "source_node_id must reference an existing topology node.", row_index, "source_node_id")
+            if target_node_id and target_node_id not in topology_node_ids:
+                add_error("topology_link", "target_node_id must reference an existing topology node.", row_index, "target_node_id")
+            if source_node_id and target_node_id and source_node_id == target_node_id:
+                add_error("topology_link", "source_node_id and target_node_id cannot be the same.", row_index, "target_node_id")
+            if link_type and link_type not in TOPOLOGY_LINK_TYPE_OPTIONS:
+                add_error("topology_link", "type must be one of the supported topology link types.", row_index, "type")
+            if enabled not in {"true", "false"}:
+                add_error("topology_link", "enabled must be true or false.", row_index, "enabled")
+
+        topology_binding_ids = set()
+        for row_index, row in enumerate(tables["topology_binding"]):
+            binding_id = _trim(row.get("id"))
+            target_type = _trim(row.get("target_type"))
+            target_id = _trim(row.get("target_id"))
+            point_id = _trim(row.get("point_id"))
+            role = _trim(row.get("role"))
+
+            if binding_id in topology_binding_ids:
+                add_error("topology_binding", "Binding ID must be unique.", row_index, "id")
+            elif binding_id:
+                topology_binding_ids.add(binding_id)
+            if target_type and target_type not in TOPOLOGY_TARGET_TYPE_OPTIONS:
+                add_error("topology_binding", "target_type must be node or link.", row_index, "target_type")
+            elif target_type == "node" and target_id and target_id not in topology_node_ids:
+                add_error("topology_binding", "target_id must reference an existing topology node.", row_index, "target_id")
+            elif target_type == "link" and target_id and target_id not in topology_link_ids:
+                add_error("topology_binding", "target_id must reference an existing topology link.", row_index, "target_id")
+            if point_id and point_id not in point_ids:
+                add_error("topology_binding", "point_id must reference an existing point.", row_index, "point_id")
+            if role and role not in TOPOLOGY_BINDING_ROLE_OPTIONS:
+                add_error("topology_binding", "role must be one of the supported topology binding roles.", row_index, "role")
 
         modbus_points = set()
         for row_index, row in enumerate(tables["modbus_mapping"]):
@@ -405,6 +570,7 @@ class ConfigStore:
             "restart_required": [
                 "openems-modbus-collector",
                 "openems-iec104-collector",
+                "openems-alarm",
             ],
             "tables": tables,
         }
@@ -424,7 +590,7 @@ class ConfigStore:
         normalized = {}
         for column in columns:
             value = _trim((row or {}).get(column, ""))
-            if column == "writable":
+            if column in {"writable", "enabled"}:
                 value = _bool_string(value)
             normalized[column] = value
         return normalized

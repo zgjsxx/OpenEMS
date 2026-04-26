@@ -253,6 +253,166 @@ def _config_overview() -> Dict[str, Any]:
     }
 
 
+def _parse_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _point_value_lookup(snapshot: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    points: Dict[str, Dict[str, Any]] = {}
+    for point in snapshot.get("points", []) or []:
+        point_id = str(point.get("id") or "")
+        if not point_id:
+            continue
+        value = point.get("value")
+        if value is None and "state_code" in point:
+            value = point.get("state_code")
+        enriched = dict(point)
+        enriched["value"] = value
+        points[point_id] = enriched
+    return points
+
+
+def _alarm_lookup(alarms: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    by_point: Dict[str, List[Dict[str, Any]]] = {}
+    for alarm in alarms:
+        point_id = str(alarm.get("point_id") or "")
+        if not point_id:
+            continue
+        by_point.setdefault(point_id, []).append(alarm)
+    return by_point
+
+
+def _highest_severity(alarms: List[Dict[str, Any]]) -> str:
+    rank = {"info": 1, "warning": 2, "critical": 3}
+    highest = ""
+    for alarm in alarms:
+        severity = str(alarm.get("severity") or "").lower()
+        if rank.get(severity, 0) > rank.get(highest, 0):
+            highest = severity
+    return highest
+
+
+def _build_topology_payload(tables: Dict[str, List[Dict[str, Any]]], snapshot: Dict[str, Any], alarm_payload: Dict[str, Any]) -> Dict[str, Any]:
+    devices = {row.get("id"): row for row in tables.get("device", []) if row.get("id")}
+    point_meta = _point_lookup()
+    point_values = _point_value_lookup(snapshot)
+    alarms = alarm_payload.get("alarms", []) or []
+    alarms_by_point = _alarm_lookup(alarms)
+
+    nodes = []
+    node_by_id: Dict[str, Dict[str, Any]] = {}
+    for row in tables.get("topology_node", []):
+        enabled = str(row.get("enabled") or "").lower() == "true"
+        device_id = str(row.get("device_id") or "")
+        node = {
+            "id": row.get("id", ""),
+            "site_id": row.get("site_id", ""),
+            "name": row.get("name", ""),
+            "type": row.get("type", "unknown"),
+            "device_id": device_id,
+            "device": devices.get(device_id) if device_id else None,
+            "device_enabled": bool(device_id and device_id in devices),
+            "x": _parse_float(row.get("x")),
+            "y": _parse_float(row.get("y")),
+            "enabled": enabled,
+            "status": "disabled" if not enabled else "normal",
+            "severity": "",
+            "binding_count": 0,
+            "no_data_count": 0,
+            "alarm_count": 0,
+        }
+        nodes.append(node)
+        node_by_id[str(node["id"])] = node
+
+    links = []
+    link_by_id: Dict[str, Dict[str, Any]] = {}
+    for row in tables.get("topology_link", []):
+        enabled = str(row.get("enabled") or "").lower() == "true"
+        link = {
+            "id": row.get("id", ""),
+            "site_id": row.get("site_id", ""),
+            "source_node_id": row.get("source_node_id", ""),
+            "target_node_id": row.get("target_node_id", ""),
+            "type": row.get("type", "line"),
+            "enabled": enabled,
+            "status": "disabled" if not enabled else "normal",
+            "severity": "",
+            "binding_count": 0,
+            "no_data_count": 0,
+            "alarm_count": 0,
+        }
+        links.append(link)
+        link_by_id[str(link["id"])] = link
+
+    bindings = []
+    total_no_data = 0
+    for row in tables.get("topology_binding", []):
+        point_id = str(row.get("point_id") or "")
+        point = point_values.get(point_id)
+        meta = point_meta.get(point_id, {})
+        point_alarms = alarms_by_point.get(point_id, [])
+        valid = bool(point and point.get("valid"))
+        binding = {
+            "id": row.get("id", ""),
+            "target_type": row.get("target_type", ""),
+            "target_id": row.get("target_id", ""),
+            "point_id": point_id,
+            "role": row.get("role", ""),
+            "label": row.get("label") or meta.get("name") or point_id,
+            "point": point,
+            "point_meta": meta,
+            "valid": valid,
+            "device_enabled": bool(meta.get("device_id") in devices) if meta.get("device_id") else False,
+            "alarms": point_alarms,
+            "severity": _highest_severity(point_alarms),
+        }
+        bindings.append(binding)
+
+        target_lookup = node_by_id if binding["target_type"] == "node" else link_by_id
+        target = target_lookup.get(str(binding["target_id"]))
+        if not target:
+            continue
+        target["binding_count"] += 1
+        if point_alarms:
+            target["alarm_count"] += len(point_alarms)
+            severity = binding["severity"]
+            if severity == "critical" or (severity == "warning" and target.get("severity") != "critical"):
+                target["severity"] = severity
+                target["status"] = "alarm"
+        if not valid:
+            target["no_data_count"] += 1
+            total_no_data += 1
+            if target["status"] == "normal":
+                target["status"] = "no-data"
+        if meta.get("device_id") and meta.get("device_id") not in devices and target["status"] == "normal":
+            target["status"] = "config-warning"
+
+    return {
+        "generated_at": int(time.time() * 1000),
+        "snapshot": {
+            "available": "error" not in snapshot,
+            "error": snapshot.get("error", ""),
+            "last_update_time": snapshot.get("last_update_time"),
+            "last_update_str": snapshot.get("last_update_str", "-"),
+            "update_seq": snapshot.get("update_seq"),
+        },
+        "summary": {
+            "node_count": len(nodes),
+            "link_count": len(links),
+            "binding_count": len(bindings),
+            "alarm_count": len(alarms),
+            "no_data_count": total_no_data,
+        },
+        "nodes": nodes,
+        "links": links,
+        "bindings": bindings,
+        "alarms": alarms,
+    }
+
+
 def _safe_audit(
     request: Request,
     *,
@@ -329,6 +489,11 @@ async def config_page(request: Request):
 @app.get("/comm", response_class=HTMLResponse)
 async def comm_page(request: Request):
     return _page_response(request, "comm_admin.html")
+
+
+@app.get("/topology", response_class=HTMLResponse)
+async def topology_page(request: Request):
+    return _page_response(request, "topology_admin.html")
 
 
 @app.get("/users", response_class=HTMLResponse)
@@ -576,6 +741,22 @@ async def api_config(request: Request):
 async def api_config_overview(request: Request):
     _session_user(request, "viewer")
     return JSONResponse(_config_overview())
+
+
+@app.get("/api/topology")
+async def api_topology(request: Request):
+    _session_user(request, "viewer")
+    tables = await asyncio.to_thread(_config_store.load)
+    if not _reader.is_attached():
+        await asyncio.to_thread(_reader.attach)
+    if _reader.is_attached():
+        snapshot = await asyncio.to_thread(_reader.read_snapshot)
+        if "error" in snapshot and snapshot.get("points", []) == []:
+            _reader.detach()
+    else:
+        snapshot = {"error": "Shared memory not available. Is a collector running?", "points": []}
+    alarm_payload = _sync_active_alarms_to_db()
+    return JSONResponse(_build_topology_payload(tables, snapshot, alarm_payload))
 
 
 @app.get("/api/comm/schema")

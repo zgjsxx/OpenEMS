@@ -1,8 +1,10 @@
 // src/apps/src/alarm_main.cpp
 // Alarm process: attaches to RtDb, monitors points, and writes active alarms to JSON.
 #include "openems/rt_db/rt_db.h"
+#include "openems/config/csv_parser.h"
 #include "openems/utils/logger.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -27,6 +29,22 @@ struct ActiveAlarm {
   std::string unit;
   uint64_t trigger_time = 0;
   uint64_t last_update_time = 0;
+};
+
+struct AlarmRule {
+  std::string id;
+  std::string point_id;
+  bool enabled = false;
+  std::string op;
+  double threshold = 0.0;
+  std::string severity;
+  std::string message;
+};
+
+struct PointValue {
+  double value = 0.0;
+  uint64_t timestamp = 0;
+  bool valid = false;
 };
 
 static uint64_t now_ms() {
@@ -63,6 +81,104 @@ static std::string alarm_to_json(const ActiveAlarm& alarm) {
       << "\"last_update_time\":" << alarm.last_update_time
       << "}";
   return oss.str();
+}
+
+static std::string join_path(const std::string& dir_path, const std::string& filename) {
+  if (dir_path.empty()) return filename;
+  char last = dir_path.back();
+  if (last == '/' || last == '\\') return dir_path + filename;
+  return dir_path + "/" + filename;
+}
+
+static bool parse_bool(const std::string& value, bool default_value = false) {
+  if (value == "true" || value == "1") return true;
+  if (value == "false" || value == "0") return false;
+  return default_value;
+}
+
+static bool is_supported_operator(const std::string& op) {
+  return op == "<" || op == "<=" || op == ">" || op == ">=" || op == "==" || op == "!=";
+}
+
+static bool is_supported_severity(const std::string& severity) {
+  return severity == "info" || severity == "warning" || severity == "critical";
+}
+
+static bool parse_double_strict(const std::string& text, double& out_value) {
+  try {
+    size_t consumed = 0;
+    out_value = std::stod(text, &consumed);
+    return consumed == text.size();
+  } catch (...) {
+    return false;
+  }
+}
+
+static bool compare_value(double value, const std::string& op, double threshold) {
+  if (op == "<") return value < threshold;
+  if (op == "<=") return value <= threshold;
+  if (op == ">") return value > threshold;
+  if (op == ">=") return value >= threshold;
+  if (op == "==") return value == threshold;
+  if (op == "!=") return value != threshold;
+  return false;
+}
+
+static std::vector<AlarmRule> load_alarm_rules(const std::string& config_path) {
+  std::vector<AlarmRule> rules;
+  auto rule_path = join_path(config_path, "alarm_rule.csv");
+  auto result = openems::config::parse_csv_file(rule_path);
+  if (!result.is_ok()) {
+    OPENEMS_LOG_W("Alarm", "Alarm rule file is unavailable: " + result.error_msg());
+    return rules;
+  }
+
+  const auto& table = result.value();
+  auto id_idx = table.col_index("id");
+  auto point_idx = table.col_index("point_id");
+  auto enabled_idx = table.col_index("enabled");
+  auto op_idx = table.col_index("operator");
+  auto threshold_idx = table.col_index("threshold");
+  auto severity_idx = table.col_index("severity");
+  auto message_idx = table.col_index("message");
+  if (!id_idx || !point_idx || !enabled_idx || !op_idx || !threshold_idx || !severity_idx || !message_idx) {
+    OPENEMS_LOG_W("Alarm", "alarm_rule.csv has invalid headers; no alarm rules loaded.");
+    return rules;
+  }
+
+  for (const auto& row : table.rows) {
+    AlarmRule rule;
+    rule.id = openems::config::csv_string(row, *id_idx);
+    rule.point_id = openems::config::csv_string(row, *point_idx);
+    rule.enabled = parse_bool(openems::config::csv_string(row, *enabled_idx), false);
+    rule.op = openems::config::csv_string(row, *op_idx);
+    rule.severity = openems::config::csv_string(row, *severity_idx);
+    rule.message = openems::config::csv_string(row, *message_idx);
+    auto threshold_text = openems::config::csv_string(row, *threshold_idx);
+
+    if (!rule.enabled) continue;
+    if (rule.id.empty() || rule.point_id.empty() || rule.message.empty()) {
+      OPENEMS_LOG_W("Alarm", "Skipping invalid alarm rule with empty id/point/message.");
+      continue;
+    }
+    if (!is_supported_operator(rule.op)) {
+      OPENEMS_LOG_W("Alarm", "Skipping alarm rule with unsupported operator: " + rule.id);
+      continue;
+    }
+    if (!is_supported_severity(rule.severity)) {
+      OPENEMS_LOG_W("Alarm", "Skipping alarm rule with unsupported severity: " + rule.id);
+      continue;
+    }
+    if (!parse_double_strict(threshold_text, rule.threshold)) {
+      OPENEMS_LOG_W("Alarm", "Skipping alarm rule with invalid threshold: " + rule.id);
+      continue;
+    }
+
+    rules.push_back(std::move(rule));
+  }
+
+  OPENEMS_LOG_I("Alarm", "Loaded enabled alarm rules: " + std::to_string(rules.size()));
+  return rules;
 }
 
 static void write_active_alarms_json(const std::string& output_path,
@@ -121,44 +237,40 @@ static void add_alarm(std::vector<ActiveAlarm>& alarms,
   alarms.push_back(ActiveAlarm{id, level, point_id, message, value, unit, ts, source_time});
 }
 
-static std::vector<ActiveAlarm> collect_active_alarms(openems::rt_db::RtDb* db) {
+static PointValue read_point_value(openems::rt_db::RtDb* db, const std::string& point_id) {
+  auto telemetry = db->read_telemetry(point_id);
+  if (telemetry.is_ok() && telemetry.value().valid) {
+    return PointValue{telemetry.value().value, telemetry.value().timestamp, true};
+  }
+
+  auto teleindication = db->read_teleindication(point_id);
+  if (teleindication.is_ok() && teleindication.value().valid) {
+    return PointValue{
+        static_cast<double>(teleindication.value().state_code),
+        teleindication.value().timestamp,
+        true};
+  }
+
+  return PointValue{};
+}
+
+static std::vector<ActiveAlarm> collect_active_alarms(
+    openems::rt_db::RtDb* db,
+    const std::vector<AlarmRule>& rules) {
   std::vector<ActiveAlarm> alarms;
 
-  auto soc_result = db->read_telemetry("bess-soc");
-  if (soc_result.is_ok() && soc_result.value().valid) {
-    double soc = soc_result.value().value;
-    if (soc < 10.0) {
-      add_alarm(alarms, "bess-soc-low", "critical", "bess-soc",
-          "SOC too low", soc, "%", soc_result.value().timestamp);
-      OPENEMS_LOG_E("Alarm", "SOC too low: " + std::to_string(soc) + "%");
-    } else if (soc > 95.0) {
-      add_alarm(alarms, "bess-soc-high", "warning", "bess-soc",
-          "SOC too high", soc, "%", soc_result.value().timestamp);
-      OPENEMS_LOG_W("Alarm", "SOC too high: " + std::to_string(soc) + "%");
-    }
-  }
+  for (const auto& rule : rules) {
+    auto point = read_point_value(db, rule.point_id);
+    if (!point.valid) continue;
 
-  auto grid_result = db->read_teleindication("bess-grid-state");
-  if (grid_result.is_ok() && grid_result.value().valid) {
-    uint16_t state = grid_result.value().state_code;
-    if (state == 1) {
-      add_alarm(alarms, "bess-off-grid", "warning", "bess-grid-state",
-          "BESS is off-grid", static_cast<double>(state), "", grid_result.value().timestamp);
-      OPENEMS_LOG_W("Alarm", "BESS is off-grid! state_code=" + std::to_string(state));
-    }
-  }
-
-  auto pv_status = db->read_teleindication("pv-running-status");
-  if (pv_status.is_ok() && pv_status.value().valid) {
-    uint16_t status = pv_status.value().state_code;
-    if (status == 0) {
-      add_alarm(alarms, "pv-stopped", "warning", "pv-running-status",
-          "PV is stopped", static_cast<double>(status), "", pv_status.value().timestamp);
-      OPENEMS_LOG_W("Alarm", "PV is stopped. state_code=0");
-    } else if (status == 3) {
-      add_alarm(alarms, "pv-fault", "critical", "pv-running-status",
-          "PV fault", static_cast<double>(status), "", pv_status.value().timestamp);
-      OPENEMS_LOG_E("Alarm", "PV fault! state_code=3");
+    if (compare_value(point.value, rule.op, rule.threshold)) {
+      add_alarm(alarms, rule.id, rule.severity, rule.point_id,
+          rule.message, point.value, "", point.timestamp);
+      if (rule.severity == "critical") {
+        OPENEMS_LOG_E("Alarm", rule.message + ": " + rule.point_id + "=" + std::to_string(point.value));
+      } else {
+        OPENEMS_LOG_W("Alarm", rule.message + ": " + rule.point_id + "=" + std::to_string(point.value));
+      }
     }
   }
 
@@ -171,8 +283,10 @@ int main(int argc, char* argv[]) {
 
   std::string shm_name = "Local\\openems_rt_db";
   std::string output_path = "runtime/alarms_active.json";
+  std::string config_path = "config/tables";
   if (argc > 1) shm_name = argv[1];
   if (argc > 2) output_path = argv[2];
+  if (argc > 3) config_path = argv[3];
 
   OPENEMS_LOG_I("Alarm", "Attaching to RtDb: " + shm_name);
   auto rtdb_result = openems::rt_db::RtDb::attach(shm_name);
@@ -184,10 +298,12 @@ int main(int argc, char* argv[]) {
 
   OPENEMS_LOG_I("Alarm", "Running. Checking every 2 seconds.");
   OPENEMS_LOG_I("Alarm", "Active alarm output: " + output_path);
+  OPENEMS_LOG_I("Alarm", "Alarm rule config path: " + config_path);
+  auto rules = load_alarm_rules(config_path);
 
   std::unordered_map<std::string, uint64_t> trigger_times;
   while (g_running.load()) {
-    auto alarms = collect_active_alarms(db);
+    auto alarms = collect_active_alarms(db, rules);
     std::unordered_map<std::string, uint64_t> active_trigger_times;
     for (auto& alarm : alarms) {
       auto it = trigger_times.find(alarm.id);

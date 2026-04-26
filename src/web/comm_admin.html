@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenEMS Comm Config</title>
+<title>OpenEMS 配置管理</title>
 <link rel="stylesheet" href="/assets/admin.css">
 </head>
 <body>
@@ -15,7 +15,8 @@
       <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
       <a class="nav-link" data-page="history" href="/history">历史查询</a>
       <a class="nav-link" data-page="config" href="/config">配置概览</a>
-      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link" data-page="comm" href="/comm">配置管理</a>
+      <a class="nav-link" data-page="topology" href="/topology">拓扑管理</a>
       <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
       <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
     </div>
@@ -27,8 +28,8 @@
   <div class="main-shell">
     <header class="topbar">
       <div>
-        <div class="page-title">通讯配置</div>
-        <div class="page-subtitle">在线编辑 `device.csv`、点表和映射表；保存前先做校验并自动备份</div>
+        <div class="page-title">配置管理</div>
+        <div class="page-subtitle">在线编辑站点、设备、点表、协议映射和告警规则；保存前先做校验并自动备份</div>
       </div>
     </header>
     <main class="page-content">
@@ -71,7 +72,7 @@ function schemaFor(name) {
 function emptyRow(table) {
   const row = {};
   for (const column of table.columns) {
-    row[column.name] = column.name === "writable" ? "false" : "";
+    row[column.name] = ["writable", "enabled"].includes(column.name) ? "false" : "";
   }
   return row;
 }
@@ -84,18 +85,37 @@ function pointRows() {
   return ["telemetry", "teleindication", "telecontrol", "teleadjust"].flatMap((name) => (state.tables[name] || []).map((row) => ({ table: name, row })));
 }
 
+function pointIds() {
+  return pointRows().map(({ row }) => row.id).filter(Boolean);
+}
+
 function pointIdsByProtocol(protocol) {
   const protocols = {};
   for (const device of state.tables.device || []) protocols[device.id] = device.protocol;
   return pointRows().filter(({ row }) => row.id && protocols[row.device_id] === protocol).map(({ row }) => row.id);
 }
 
+function topologyNodeIds() {
+  return (state.tables.topology_node || []).map((row) => row.id).filter(Boolean);
+}
+
+function topologyTargetIds() {
+  return [
+    ...topologyNodeIds(),
+    ...(state.tables.topology_link || []).map((row) => row.id).filter(Boolean),
+  ];
+}
+
 function dynamicOptions(column, currentValue) {
   let options = [];
   if (column.options) options = [...column.options];
   else if (column.dynamic_options === "device_ids") options = deviceIds();
+  else if (column.dynamic_options === "point_ids") options = pointIds();
   else if (column.dynamic_options === "modbus_point_ids") options = pointIdsByProtocol("modbus-tcp");
   else if (column.dynamic_options === "iec104_point_ids") options = pointIdsByProtocol("iec104");
+  else if (column.dynamic_options === "topology_node_ids") options = topologyNodeIds();
+  else if (column.dynamic_options === "topology_target_ids") options = topologyTargetIds();
+  if (!column.required && !options.includes("")) options.unshift("");
   if (currentValue && !options.includes(currentValue)) options.unshift(currentValue);
   return options;
 }
@@ -140,10 +160,13 @@ function renderTable() {
   html += "</tbody></table>";
   document.getElementById("table-wrap").innerHTML = html;
 
+  function updateField(field) {
+    state.tables[table.name][Number(field.dataset.row)][field.dataset.column] = field.value;
+  }
+
   document.querySelectorAll("#table-wrap input, #table-wrap select").forEach((field) => {
-    field.addEventListener("change", () => {
-      state.tables[table.name][Number(field.dataset.row)][field.dataset.column] = field.value;
-    });
+    field.addEventListener("input", () => updateField(field));
+    field.addEventListener("change", () => updateField(field));
   });
   document.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -158,6 +181,14 @@ function renderTable() {
       renderTable();
     });
   }
+}
+
+function syncActiveTableFromDom() {
+  const table = schemaFor(state.activeTab);
+  if (!table || !state.tables[table.name]) return;
+  document.querySelectorAll("#table-wrap input, #table-wrap select").forEach((field) => {
+    state.tables[table.name][Number(field.dataset.row)][field.dataset.column] = field.value;
+  });
 }
 
 async function loadAll() {
@@ -175,6 +206,7 @@ async function loadAll() {
 
 async function validateConfig() {
   try {
+    syncActiveTableFromDom();
     const data = await OpenEMSAdmin.api("/api/comm/validate", {
       method: "POST",
       body: JSON.stringify({ tables: state.tables }),
@@ -187,6 +219,7 @@ async function validateConfig() {
 
 async function saveConfig() {
   try {
+    syncActiveTableFromDom();
     const data = await OpenEMSAdmin.api("/api/comm/save", {
       method: "POST",
       body: JSON.stringify({ tables: state.tables }),
@@ -202,7 +235,7 @@ async function boot() {
   const me = await OpenEMSAdmin.bindChrome("comm");
   state.currentUser = me.user || null;
   if (state.currentUser.role !== "admin") {
-    setNotice("只有管理员可以修改通讯配置。当前页面已切换为只读。", "error");
+    setNotice("只有管理员可以修改配置管理。当前页面已切换为只读。", "error");
     document.getElementById("validate-btn").disabled = true;
     document.getElementById("save-btn").disabled = true;
   }
@@ -216,3 +249,4 @@ boot();
 </script>
 </body>
 </html>
+

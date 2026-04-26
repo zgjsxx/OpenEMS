@@ -31,6 +31,7 @@ add_executable(openems-alarm
 target_link_libraries(openems-alarm PRIVATE
   openems_common
   openems_utils
+  openems_config
   openems_rt_db
 )
 

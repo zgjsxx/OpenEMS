@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS 拓扑管理</title>
+<link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">配置管理</a>
+      <a class="nav-link" data-page="topology" href="/topology">拓扑管理</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </div>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">拓扑管理</div>
+        <div class="page-subtitle">基于 CSV 拓扑配置展示站点单线图、实时值和活动告警</div>
+      </div>
+      <a class="button secondary" href="/comm">编辑拓扑配置</a>
+    </header>
+    <main class="page-content">
+      <section class="card-grid">
+        <article class="card"><div class="label">节点数</div><div class="value" id="node-count">-</div><div class="hint" id="link-count">连接：-</div></article>
+        <article class="card"><div class="label">活动告警</div><div class="value" id="alarm-count">-</div><div class="hint">按绑定点位汇总</div></article>
+        <article class="card"><div class="label">无实时数据</div><div class="value" id="no-data-count">-</div><div class="hint">采集未启动或点位无效时会增加</div></article>
+        <article class="card"><div class="label">最近刷新</div><div class="value" id="topology-update" style="font-size:20px;">-</div><div class="hint" id="snapshot-state">-</div></article>
+      </section>
+
+      <section class="topology-layout">
+        <div class="table-card topology-card">
+          <div class="table-card-header">
+            <div>
+              <div class="section-title">站点单线图</div>
+              <div class="section-subtitle">点击节点查看绑定点位和告警详情</div>
+            </div>
+            <div id="topology-legend" class="topology-legend"></div>
+          </div>
+          <div class="topology-canvas-wrap">
+            <svg id="topology-canvas" class="topology-canvas" viewBox="0 0 720 360" role="img" aria-label="OpenEMS topology"></svg>
+          </div>
+        </div>
+
+        <aside class="panel topology-detail">
+          <div class="section-title" id="detail-title">节点详情</div>
+          <div class="section-subtitle" id="detail-subtitle">请选择拓扑节点</div>
+          <div id="detail-body" class="topology-detail-body muted">暂无数据</div>
+        </aside>
+      </section>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+let topologyState = null;
+let selectedNodeId = "";
+
+function valueText(binding) {
+  const point = binding.point || {};
+  if (!binding.valid) return "---";
+  const value = point.value;
+  const unit = point.unit || (binding.point_meta && binding.point_meta.unit) || "";
+  if (typeof value === "number") {
+    const formatted = Math.abs(value) >= 1000 ? value.toFixed(1) : Math.abs(value) >= 1 ? value.toFixed(2) : value.toFixed(4);
+    return `${formatted} ${unit}`.trim();
+  }
+  return `${value ?? "---"} ${unit}`.trim();
+}
+
+function statusLabel(status, severity) {
+  if (severity === "critical") return "critical";
+  if (severity === "warning") return "warning";
+  if (status === "no-data") return "no data";
+  if (status === "config-warning") return "config";
+  if (status === "disabled") return "disabled";
+  return "normal";
+}
+
+function statusClass(status, severity) {
+  if (severity === "critical") return "danger";
+  if (severity === "warning") return "warn";
+  if (status === "normal") return "success";
+  if (status === "no-data") return "muted";
+  if (status === "config-warning") return "warn";
+  return "muted";
+}
+
+function nodeLetter(type) {
+  const map = { grid: "G", bus: "B", breaker: "K", switch: "S", pv: "PV", bess: "ES", load: "L", meter: "M", transformer: "T" };
+  return map[type] || "?";
+}
+
+function bindingsFor(targetType, targetId) {
+  return (topologyState.bindings || []).filter((binding) => binding.target_type === targetType && binding.target_id === targetId);
+}
+
+function renderSummary(data) {
+  const summary = data.summary || {};
+  document.getElementById("node-count").textContent = summary.node_count ?? "-";
+  document.getElementById("link-count").textContent = `连接：${summary.link_count ?? "-"}`;
+  document.getElementById("alarm-count").textContent = summary.alarm_count ?? 0;
+  document.getElementById("no-data-count").textContent = summary.no_data_count ?? 0;
+  document.getElementById("topology-update").textContent = OpenEMSAdmin.formatDateTime(data.generated_at);
+  const snapshot = data.snapshot || {};
+  document.getElementById("snapshot-state").textContent = snapshot.available ? `Seq: ${snapshot.update_seq || "-"} / ${snapshot.last_update_str || "-"}` : (snapshot.error || "共享内存不可用");
+  document.getElementById("topology-legend").innerHTML = [
+    OpenEMSAdmin.statusPill("normal"),
+    OpenEMSAdmin.statusPill("warning"),
+    OpenEMSAdmin.statusPill("critical"),
+    OpenEMSAdmin.statusPill("no data"),
+  ].join("");
+}
+
+function renderTopology(data) {
+  const svg = document.getElementById("topology-canvas");
+  const nodes = data.nodes || [];
+  const links = data.links || [];
+  const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const linkMarkup = links.map((link) => {
+    const source = nodeMap[link.source_node_id];
+    const target = nodeMap[link.target_node_id];
+    if (!source || !target || !link.enabled) return "";
+    const klass = statusClass(link.status, link.severity);
+    return `<g class="topology-link ${klass}" data-link="${OpenEMSAdmin.escapeHtml(link.id)}">
+      <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}"></line>
+      <text x="${(source.x + target.x) / 2}" y="${(source.y + target.y) / 2 - 8}">${OpenEMSAdmin.escapeHtml(link.type || "line")}</text>
+    </g>`;
+  }).join("");
+  const nodeMarkup = nodes.map((node) => {
+    if (!node.enabled) return "";
+    const klass = statusClass(node.status, node.severity);
+    const nodeBindings = bindingsFor("node", node.id);
+    const primary = nodeBindings.find((binding) => ["power", "soc", "status"].includes(binding.role));
+    const value = primary ? valueText(primary) : "";
+    return `<g class="topology-node ${klass} ${selectedNodeId === node.id ? "selected" : ""}" data-node="${OpenEMSAdmin.escapeHtml(node.id)}" transform="translate(${node.x}, ${node.y})">
+      <rect x="-58" y="-34" width="116" height="68" rx="14"></rect>
+      <circle cx="-38" cy="-10" r="14"></circle>
+      <text class="node-icon" x="-38" y="-6">${OpenEMSAdmin.escapeHtml(nodeLetter(node.type))}</text>
+      <text class="node-name" x="-16" y="-8">${OpenEMSAdmin.escapeHtml(node.name || node.id)}</text>
+      <text class="node-value" x="-16" y="14">${OpenEMSAdmin.escapeHtml(value || statusLabel(node.status, node.severity))}</text>
+    </g>`;
+  }).join("");
+  svg.innerHTML = `<defs><filter id="topologyGlow"><feGaussianBlur stdDeviation="2.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${linkMarkup}${nodeMarkup}`;
+  svg.querySelectorAll("[data-node]").forEach((nodeEl) => {
+    nodeEl.addEventListener("click", () => {
+      selectedNodeId = nodeEl.dataset.node;
+      renderTopology(topologyState);
+      renderDetail();
+    });
+  });
+}
+
+function renderDetail() {
+  const data = topologyState || {};
+  const node = (data.nodes || []).find((item) => item.id === selectedNodeId);
+  if (!node) {
+    document.getElementById("detail-title").textContent = "节点详情";
+    document.getElementById("detail-subtitle").textContent = "请选择拓扑节点";
+    document.getElementById("detail-body").innerHTML = '<div class="muted">暂无数据</div>';
+    return;
+  }
+  const nodeBindings = bindingsFor("node", node.id);
+  document.getElementById("detail-title").textContent = node.name || node.id;
+  document.getElementById("detail-subtitle").innerHTML = `${OpenEMSAdmin.escapeHtml(node.type)} / ${OpenEMSAdmin.escapeHtml(node.device_id || "未绑定设备")} ${OpenEMSAdmin.statusPill(statusLabel(node.status, node.severity))}`;
+  const rows = nodeBindings.map((binding) => {
+    const point = binding.point || {};
+    const meta = binding.point_meta || {};
+    const alarmText = (binding.alarms || [])
+      .map((alarm) => `${OpenEMSAdmin.escapeHtml(alarm.severity || "")}: ${OpenEMSAdmin.escapeHtml(alarm.message || alarm.alarm_id || "")}`)
+      .join("<br>");
+    return `<tr>
+      <td>${OpenEMSAdmin.escapeHtml(binding.label || binding.point_id)}</td>
+      <td>${OpenEMSAdmin.escapeHtml(binding.point_id)}</td>
+      <td>${OpenEMSAdmin.escapeHtml(binding.role)}</td>
+      <td><strong>${OpenEMSAdmin.escapeHtml(valueText(binding))}</strong></td>
+      <td>${OpenEMSAdmin.qualityPill(point.quality || (binding.valid ? "Good" : "Unknown"))}</td>
+      <td>${OpenEMSAdmin.escapeHtml(meta.device_id || "-")}</td>
+      <td>${OpenEMSAdmin.formatDateTime(point.timestamp)}</td>
+      <td>${alarmText || "-"}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("detail-body").innerHTML = `
+    <div class="list-item">
+      <div>节点 ID：<strong>${OpenEMSAdmin.escapeHtml(node.id)}</strong></div>
+      <div class="muted">坐标：${node.x}, ${node.y}；绑定点：${node.binding_count}；无数据：${node.no_data_count}</div>
+    </div>
+    <div class="table-wrap topology-binding-table">
+      <table>
+        <thead><tr><th>名称</th><th>点位</th><th>角色</th><th>值</th><th>质量</th><th>设备</th><th>时间</th><th>告警</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="8" class="muted">未绑定点位</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+async function refreshTopology() {
+  try {
+    topologyState = await OpenEMSAdmin.api("/api/topology");
+    if (!selectedNodeId && (topologyState.nodes || []).length) selectedNodeId = topologyState.nodes[0].id;
+    renderSummary(topologyState);
+    renderTopology(topologyState);
+    renderDetail();
+  } catch (error) {
+    document.getElementById("detail-body").innerHTML = `<div class="notice error">${OpenEMSAdmin.escapeHtml(error.message || "拓扑加载失败")}</div>`;
+  }
+}
+
+async function boot() {
+  await OpenEMSAdmin.bindChrome("topology");
+  await refreshTopology();
+  window.setInterval(refreshTopology, 2000);
+}
+
+boot().catch((error) => {
+  document.getElementById("detail-body").innerHTML = `<div class="notice error">${OpenEMSAdmin.escapeHtml(error.message || "页面初始化失败")}</div>`;
+});
+</script>
+</body>
+</html>

@@ -19,7 +19,8 @@
       <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
       <a class="nav-link" data-page="history" href="/history">历史查询</a>
       <a class="nav-link" data-page="config" href="/config">配置概览</a>
-      <a class="nav-link" data-page="comm" href="/comm">通讯配置</a>
+      <a class="nav-link" data-page="comm" href="/comm">配置管理</a>
+      <a class="nav-link" data-page="topology" href="/topology">拓扑管理</a>
       <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
       <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
     </nav>
@@ -93,6 +94,7 @@
 let currentUser = null;
 let deviceNames = {};
 let commandStatusCache = {};
+let commandDrafts = {};
 
 function formatValue(value) {
   if (typeof value !== "number") return "-";
@@ -137,6 +139,34 @@ async function refreshSummary() {
   renderDevices(snapshot.points || []);
 }
 
+function snapshotCommandInputs() {
+  const active = document.activeElement;
+  let focusedPointId = "";
+  document.querySelectorAll('input[id^="cmd-"]').forEach((input) => {
+    const pointId = input.id.replace("cmd-", "");
+    commandDrafts[pointId] = input.value;
+    if (active === input) {
+      focusedPointId = pointId;
+    }
+  });
+  return focusedPointId;
+}
+
+function restoreCommandInputs(focusedPointId) {
+  Object.entries(commandDrafts).forEach(([pointId, value]) => {
+    const input = document.getElementById(`cmd-${pointId}`);
+    if (input && input.value !== value) {
+      input.value = value;
+    }
+  });
+  if (focusedPointId) {
+    const input = document.getElementById(`cmd-${focusedPointId}`);
+    if (input) {
+      input.focus();
+    }
+  }
+}
+
 function renderAlarmPreview(rows) {
   const body = document.getElementById("alarm-rows");
   if (!rows.length) {
@@ -172,6 +202,7 @@ function renderStatusList(system, snapshot) {
 
 async function submitCommand(pointId) {
   const input = document.getElementById(`cmd-${pointId}`);
+  commandDrafts[pointId] = input.value;
   const value = Number(input.value);
   if (!Number.isFinite(value)) {
     alert("请输入有效数值");
@@ -185,6 +216,7 @@ async function submitCommand(pointId) {
     body: JSON.stringify({ point_id: pointId, desired_value: value }),
   });
   input.value = "";
+  commandDrafts[pointId] = "";
   commandStatusCache[pointId] = { status: "Pending", time: new Date().toISOString() };
   await refreshCommands(pointId);
   await refreshSummary();
@@ -200,6 +232,7 @@ async function refreshCommands(singlePointId = "") {
 
 function renderDevices(points) {
   const container = document.getElementById("device-panels");
+  const focusedPointId = snapshotCommandInputs();
   const groups = {};
   for (const point of points) {
     const key = point.device || point.device_id || "unknown";
@@ -219,6 +252,7 @@ function renderDevices(points) {
       const value = point.valid ? formatValue(point.value) : "---";
       if (isWritable) {
         const cmd = commandStatusCache[point.id] || {};
+        const draftValue = Object.prototype.hasOwnProperty.call(commandDrafts, point.id) ? commandDrafts[point.id] : "";
         return `<tr>
           <td>${OpenEMSAdmin.escapeHtml(point.id)}</td>
           <td>${value}</td>
@@ -226,7 +260,7 @@ function renderDevices(points) {
           <td>${quality}</td>
           <td>
             <div style="display:flex;gap:8px;align-items:center;">
-              <input id="cmd-${point.id}" type="number" step="any" style="max-width:120px;">
+              <input id="cmd-${point.id}" type="number" step="any" value="${OpenEMSAdmin.escapeHtml(draftValue)}" style="max-width:120px;">
               <button onclick="submitCommand('${point.id}')">执行</button>
             </div>
           </td>
@@ -259,6 +293,7 @@ function renderDevices(points) {
       </div>
     </section>`;
   }).join("");
+  restoreCommandInputs(focusedPointId);
 }
 
 async function boot() {
