@@ -1,26 +1,124 @@
 # OpenEMS
 
-## Web 管理后台数据库
+OpenEMS 是一个单站能源管理 / 遥测采集项目，当前包含 C++ 采集与 RtDb 进程，以及 Python FastAPI 运维后台。
 
-当前仓库中的 Web 管理后台使用 PostgreSQL。
+## 运行目录
 
-- 服务端默认按 PostgreSQL 15 配置。
-- 依据脚本：
-  - [src/web/init_admin_portal_db.ps1](src/web/init_admin_portal_db.ps1)
-  - [src/web/install_scripts/init_admin_portal_db.ps1](src/web/install_scripts/init_admin_portal_db.ps1)
-- 这两个脚本里使用的容器名都是 `postgres15`。
+推荐使用 CMake install 生成仓库根目录下的 `install/`，并从 `install/` 运行所有程序：
 
-本地启动管理后台时，数据库连接串通过 `OPENEMS_DB_URL` 注入，相关脚本：
+```powershell
+cmake -S . -B build-codex-vs2019 -G "Visual Studio 16 2019" -A x64
+cmake --build build-codex-vs2019 --config Release
+cmake --install build-codex-vs2019 --config Release --prefix install
+```
 
-- [src/web/start_admin_portal_local.ps1](src/web/start_admin_portal_local.ps1)
-- [src/web/install_scripts/start_admin_portal.ps1](src/web/install_scripts/start_admin_portal.ps1)
+安装后主要目录：
 
-Python 驱动层位于 [src/web/db.py](src/web/db.py)：
+- `install/bin`
+- `install/config`
+- `install/runtime`
+- `install/web`
 
-- 优先使用 `psycopg`
-- 如果没有安装，再回退到 `psycopg2`
+## PostgreSQL
 
-说明：
+Web 后台和 `openems-rtdb-service` 都通过 `OPENEMS_DB_URL` 连接 PostgreSQL。
 
-- 当前仓库中明确的是“默认 PostgreSQL 服务端版本为 15”
-- Python 驱动版本没有在仓库里固定死，只约定驱动类型为 `psycopg` 或 `psycopg2`
+本地默认示例：
+
+```powershell
+$env:OPENEMS_DB_URL = "postgresql://postgres:postgres@127.0.0.1:5432/openems_admin"
+```
+
+当前按 PostgreSQL 15 验证。Python 后台依赖安装：
+
+```powershell
+python -m pip install -r src/web/requirements.txt
+```
+
+## 结构化配置
+
+PostgreSQL 是主配置源，配置按结构化表存储，例如：
+
+- `sites`
+- `ems_config`
+- `devices`
+- `points`
+- `modbus_mappings`
+- `iec104_mappings`
+- `alarm_rules`
+- `topology_nodes`
+- `topology_links`
+- `topology_bindings`
+
+旧的 `config_tables(table_name, rows_json)` 已不再作为运行配置源。迁移脚本会把旧 JSON 快照拆入结构化表，并将旧表改名为 `config_tables_legacy`。
+
+CSV 保留为导入、导出、备份和离线兜底格式。
+
+## RtDb Service 配置源
+
+`openems-rtdb-service` 默认从 PostgreSQL 结构化配置表读取运行必需配置：
+
+- `sites`
+- `ems_config`
+- `devices`
+- `points`
+- `modbus_mappings`
+- `iec104_mappings`
+
+如果 PostgreSQL 不可用、`libpq` 运行库不存在或结构化配置读取失败，会自动回退到 CSV。
+
+启动参数：
+
+```text
+openems-rtdb-service [source] [config_path] [shm_name]
+```
+
+参数说明：
+
+- `source`：`postgresql` 或 `csv`，默认 `postgresql`
+- `config_path`：CSV 配置目录，默认 `config/tables`
+- `shm_name`：共享内存名称，默认使用平台内置值
+
+示例：
+
+```powershell
+.\bin\openems-rtdb-service.exe postgresql config/tables
+.\bin\openems-rtdb-service.exe csv config/tables
+```
+
+Linux 示例：
+
+```sh
+./bin/openems-rtdb-service postgresql config/tables
+./bin/openems-rtdb-service csv config/tables
+```
+
+## CSV 导入导出
+
+安装目录下导入 CSV 到 PostgreSQL：
+
+```powershell
+.\sync_config_to_postgres.ps1
+```
+
+Linux：
+
+```sh
+./sync_config_to_postgres.sh
+```
+
+源码目录开发调试：
+
+```powershell
+python src/web/sync_config_to_postgres.py --mode import --config-dir config/tables
+python src/web/sync_config_to_postgres.py --mode export --config-dir config/tables
+```
+
+## libpq 运行库
+
+RtDb service 使用运行时动态加载 `libpq`。
+
+- Windows：`third_party/postgresql/windows/x64/bin/` 中放置 `libpq.dll` 及依赖 DLL，install 时会复制到 `install/bin`。
+- Linux：`third_party/postgresql/linux/x64/lib/` 中放置 `libpq.so*`，install 时会复制到 `install/lib`。
+
+如果运行库不可用，程序会打印 warning 并回退 CSV。

@@ -81,6 +81,26 @@ install(TARGETS ${OPENEMS_APP_TARGETS}
   RUNTIME DESTINATION bin
 )
 
+if(WIN32)
+  file(GLOB OPENEMS_LIBPQ_RUNTIME_FILES
+    "${CMAKE_SOURCE_DIR}/third_party/postgresql/windows/x64/bin/*.dll"
+  )
+  if(OPENEMS_LIBPQ_RUNTIME_FILES)
+    install(FILES ${OPENEMS_LIBPQ_RUNTIME_FILES}
+      DESTINATION bin
+    )
+  endif()
+else()
+  file(GLOB OPENEMS_LIBPQ_RUNTIME_FILES
+    "${CMAKE_SOURCE_DIR}/third_party/postgresql/linux/x64/lib/libpq.so*"
+  )
+  if(OPENEMS_LIBPQ_RUNTIME_FILES)
+    install(FILES ${OPENEMS_LIBPQ_RUNTIME_FILES}
+      DESTINATION lib
+    )
+  endif()
+endif()
+
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/
   DESTINATION config
 )

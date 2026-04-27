@@ -70,7 +70,22 @@ const OpenEMSAdmin = (() => {
       throw new Error((data && data.error) || "Unauthorized");
     }
     if (!response.ok) {
-      throw new Error((data && data.error) || `Request failed: ${response.status}`);
+      let message = (data && data.error) || `Request failed: ${response.status}`;
+      if (data && Array.isArray(data.errors) && data.errors.length) {
+        const details = data.errors.slice(0, 5).map((item) => {
+          const location = [
+            item.table,
+            item.row !== null && item.row !== undefined ? `row ${Number(item.row) + 1}` : "",
+            item.column || "",
+          ].filter(Boolean).join(".");
+          return location ? `${location}: ${item.message}` : item.message;
+        });
+        message = `${message}: ${details.join("; ")}`;
+        if (data.errors.length > details.length) {
+          message += `; and ${data.errors.length - details.length} more`;
+        }
+      }
+      throw new Error(message);
     }
     return data;
   }

@@ -233,7 +233,7 @@ def _history_day_files(start_ms: int, end_ms: int) -> List[Path]:
 
 
 def _config_overview() -> Dict[str, Any]:
-    data = _config_store.load()
+    data, source, warning = _load_config_tables()
     devices = data.get("device", [])
     device_counts: Dict[str, int] = {}
     protocol_counts: Dict[str, int] = {}
@@ -250,7 +250,21 @@ def _config_overview() -> Dict[str, Any]:
         "point_counts": point_counts,
         "mapping_counts": mapping_counts,
         "tables": data,
+        "source": source,
+        "warning": warning,
     }
+
+
+def _load_config_tables() -> tuple[Dict[str, Any], str, str | None]:
+    if _db_ready():
+        try:
+            tables = _db.load_structured_config()
+            if tables.get("site") or tables.get("device") or tables.get("ems_config"):
+                return tables, "postgresql", None
+            return _config_store.load(), "csv", "PostgreSQL structured config is empty; using CSV fallback."
+        except Exception as exc:
+            return _config_store.load(), "csv", "PostgreSQL structured config load failed: " + str(exc)
+    return _config_store.load(), "csv", _db_state.get("error") or _db.last_error or "Database unavailable."
 
 
 def _parse_float(value: Any, default: float = 0.0) -> float:
@@ -746,7 +760,7 @@ async def api_config_overview(request: Request):
 @app.get("/api/topology")
 async def api_topology(request: Request):
     _session_user(request, "viewer")
-    tables = await asyncio.to_thread(_config_store.load)
+    tables, _, _ = await asyncio.to_thread(_load_config_tables)
     if not _reader.is_attached():
         await asyncio.to_thread(_reader.attach)
     if _reader.is_attached():
@@ -768,7 +782,11 @@ async def api_comm_schema(request: Request):
 @app.get("/api/comm/data")
 async def api_comm_data(request: Request):
     _session_user(request, "viewer")
-    return JSONResponse({"tables": await asyncio.to_thread(_config_store.load)})
+    tables, source, warning = await asyncio.to_thread(_load_config_tables)
+    payload = {"tables": tables, "source": source}
+    if warning:
+        payload["warning"] = warning
+    return JSONResponse(payload)
 
 
 @app.post("/api/comm/validate")
@@ -782,14 +800,54 @@ async def api_comm_validate(request: Request, req: ConfigEditorRequest):
 @app.post("/api/comm/save")
 async def api_comm_save(request: Request, req: ConfigEditorRequest):
     user = _session_user(request, "admin")
-    before_tables = await asyncio.to_thread(_config_store.load)
-    result = await asyncio.to_thread(_config_store.save, _model_dump(req))
+    before_tables, _, _ = await asyncio.to_thread(_load_config_tables)
+    result = await asyncio.to_thread(_config_store.validate, _model_dump(req))
+    if result["ok"]:
+        if not _db_ready():
+            result = {
+                "ok": False,
+                "errors": [{
+                    "table": "postgresql",
+                    "row": None,
+                    "column": None,
+                    "message": _db_state.get("error") or _db.last_error or "Database unavailable.",
+                }],
+                "tables": result.get("tables", {}),
+            }
+        else:
+            try:
+                await asyncio.to_thread(_db.save_structured_config, result.get("tables", {}))
+                backup_dir = await asyncio.to_thread(_config_store.write_csv, result.get("tables", {}))
+                result.update({
+                    "ok": True,
+                    "message": "Structured PostgreSQL config saved successfully.",
+                    "backup_dir": str(backup_dir) if backup_dir else "",
+                    "source": "postgresql",
+                    "csv_export": {"ok": True},
+                    "restart_required": [
+                        "openems-rtdb-service",
+                        "openems-modbus-collector",
+                        "openems-iec104-collector",
+                        "openems-alarm",
+                    ],
+                })
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "errors": [{
+                        "table": "postgresql",
+                        "row": None,
+                        "column": None,
+                        "message": "Structured config save failed: " + str(exc),
+                    }],
+                    "tables": result.get("tables", {}),
+                }
     status_code = 200 if result["ok"] else 400
     _safe_audit(
         request,
         action="comm_save",
-        resource_type="config_tables",
-        resource_id="config/tables",
+        resource_type="structured_config",
+        resource_id="postgresql",
         result="success" if result["ok"] else "failed",
         before_json={"tables": before_tables},
         after_json={"tables": result.get("tables", {})},

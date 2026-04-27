@@ -106,6 +106,14 @@ function topologyTargetIds() {
   ];
 }
 
+function syncSingleSiteReferences(siteId) {
+  if (!siteId || (state.tables.site || []).length !== 1) return;
+  for (const row of state.tables.ems_config || []) row.site_id = siteId;
+  for (const tableName of ["device", "topology_node", "topology_link"]) {
+    for (const row of state.tables[tableName] || []) row.site_id = siteId;
+  }
+}
+
 function dynamicOptions(column, currentValue) {
   let options = [];
   if (column.options) options = [...column.options];
@@ -162,6 +170,9 @@ function renderTable() {
 
   function updateField(field) {
     state.tables[table.name][Number(field.dataset.row)][field.dataset.column] = field.value;
+    if (table.name === "site" && field.dataset.column === "id") {
+      syncSingleSiteReferences(field.value);
+    }
   }
 
   document.querySelectorAll("#table-wrap input, #table-wrap select").forEach((field) => {

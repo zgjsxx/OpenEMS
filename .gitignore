@@ -1,4 +1,7 @@
 build/
+build-*/
+install/
+tools/downloads/
 __pycache__/
 .claude/
 *.pyc

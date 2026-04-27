@@ -557,11 +557,7 @@ class ConfigStore:
             return validation
 
         tables = validation["tables"]
-        backup_dir = self._backup_current_csvs()
-        for table in TABLE_SCHEMAS:
-            columns = [column["name"] for column in table["columns"]]
-            rows = [self._normalize_row(table["name"], row, columns) for row in tables[table["name"]]]
-            _write_csv_rows(self.config_dir / table["file"], columns, rows)
+        backup_dir = self.write_csv(tables)
 
         return {
             "ok": True,
@@ -575,6 +571,15 @@ class ConfigStore:
             "tables": tables,
         }
 
+    def write_csv(self, tables, backup=True):
+        backup_dir = self._backup_current_csvs() if backup else None
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        for table in TABLE_SCHEMAS:
+            columns = [column["name"] for column in table["columns"]]
+            rows = [self._normalize_row(table["name"], row, columns) for row in tables.get(table["name"], [])]
+            _write_csv_rows(self.config_dir / table["file"], columns, rows)
+        return backup_dir
+
     def _normalize_payload(self, payload):
         tables = {}
         source_tables = (payload or {}).get("tables", {})
@@ -584,7 +589,22 @@ class ConfigStore:
             for row in rows:
                 normalized_rows.append(self._normalize_row(table["name"], row, [column["name"] for column in table["columns"]]))
             tables[table["name"]] = normalized_rows
+        self._sync_single_site_references(tables)
         return tables
+
+    @staticmethod
+    def _sync_single_site_references(tables):
+        site_rows = tables.get("site") or []
+        if len(site_rows) != 1:
+            return
+        site_id = _trim(site_rows[0].get("id"))
+        if not site_id:
+            return
+        for row in tables.get("ems_config", []):
+            row["site_id"] = site_id
+        for table_name in ("device", "topology_node", "topology_link"):
+            for row in tables.get(table_name, []):
+                row["site_id"] = site_id
 
     def _normalize_row(self, table_name, row, columns):
         normalized = {}

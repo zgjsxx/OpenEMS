@@ -3,54 +3,407 @@
 #include "openems/config/csv_parser.h"
 #include "openems/utils/logger.h"
 
+#include "nlohmann/json.hpp"
+
+#include <cstdlib>
+#include <filesystem>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+#ifdef _WIN32
+  #include <windows.h>
+#else
+  #include <dlfcn.h>
+  #include <limits.h>
+  #include <unistd.h>
+#endif
+
 namespace openems::config {
 
+namespace {
+
+using TableMap = std::map<std::string, CsvTable>;
+
+static const std::vector<std::string> kRuntimeTables = {
+    "ems_config",
+    "site",
+    "device",
+    "telemetry",
+    "teleindication",
+    "telecontrol",
+    "teleadjust",
+    "modbus_mapping",
+    "iec104_mapping",
+};
+
+static const std::map<std::string, std::vector<std::string>> kTableHeaders = {
+    {"ems_config", {"log_level", "default_poll_interval_ms", "site_id"}},
+    {"site", {"id", "name", "description"}},
+    {"device", {"id", "site_id", "name", "type", "protocol", "ip", "port", "unit_id", "poll_interval_ms", "common_address"}},
+    {"telemetry", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
+    {"teleindication", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
+    {"telecontrol", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
+    {"teleadjust", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
+    {"modbus_mapping", {"point_id", "function_code", "register_address", "register_count", "data_type", "scale", "offset"}},
+    {"iec104_mapping", {"point_id", "type_id", "ioa", "common_address", "scale", "cot"}},
+};
+
+enum {
+  kConnectionOk = 0,
+  kTuplesOk = 2,
+};
+
+struct LibpqApi {
+#ifdef _WIN32
+  HMODULE handle = nullptr;
+#else
+  void* handle = nullptr;
+#endif
+  void* (*PQconnectdb)(const char*) = nullptr;
+  int (*PQstatus)(void*) = nullptr;
+  char* (*PQerrorMessage)(void*) = nullptr;
+  void* (*PQexec)(void*, const char*) = nullptr;
+  int (*PQresultStatus)(void*) = nullptr;
+  int (*PQntuples)(void*) = nullptr;
+  char* (*PQgetvalue)(void*, int, int) = nullptr;
+  void (*PQclear)(void*) = nullptr;
+  void (*PQfinish)(void*) = nullptr;
+
+  LibpqApi() = default;
+  LibpqApi(const LibpqApi&) = delete;
+  LibpqApi& operator=(const LibpqApi&) = delete;
+  LibpqApi(LibpqApi&& other) noexcept {
+    *this = std::move(other);
+  }
+  LibpqApi& operator=(LibpqApi&& other) noexcept {
+    if (this == &other) return *this;
+    handle = other.handle;
+    PQconnectdb = other.PQconnectdb;
+    PQstatus = other.PQstatus;
+    PQerrorMessage = other.PQerrorMessage;
+    PQexec = other.PQexec;
+    PQresultStatus = other.PQresultStatus;
+    PQntuples = other.PQntuples;
+    PQgetvalue = other.PQgetvalue;
+    PQclear = other.PQclear;
+    PQfinish = other.PQfinish;
+    other.handle = nullptr;
+    return *this;
+  }
+
+  ~LibpqApi() {
+#ifdef _WIN32
+    if (handle) FreeLibrary(handle);
+#else
+    if (handle) dlclose(handle);
+#endif
+  }
+};
+
+static void* load_symbol(LibpqApi& api, const char* name) {
+#ifdef _WIN32
+  return reinterpret_cast<void*>(GetProcAddress(api.handle, name));
+#else
+  return dlsym(api.handle, name);
+#endif
+}
+
+template <typename T>
+static bool bind_symbol(LibpqApi& api, T& target, const char* name) {
+  target = reinterpret_cast<T>(load_symbol(api, name));
+  return target != nullptr;
+}
+
+static std::filesystem::path current_working_dir() {
+  std::error_code ec;
+  auto path = std::filesystem::current_path(ec);
+  return ec ? std::filesystem::path{} : path;
+}
+
+static std::filesystem::path executable_dir() {
+#ifdef _WIN32
+  char buffer[MAX_PATH] = {};
+  const DWORD size = GetModuleFileNameA(nullptr, buffer, MAX_PATH);
+  if (size == 0 || size >= MAX_PATH) return {};
+  return std::filesystem::path(buffer).parent_path();
+#else
+  char buffer[PATH_MAX] = {};
+  const ssize_t size = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+  if (size <= 0) return {};
+  buffer[size] = '\0';
+  return std::filesystem::path(buffer).parent_path();
+#endif
+}
+
+static void add_unique_path(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
+  if (path.empty()) return;
+  std::error_code ec;
+  auto normalized = std::filesystem::weakly_canonical(path, ec);
+  if (ec) normalized = path.lexically_normal();
+  for (const auto& existing : paths) {
+    if (existing == normalized) return;
+  }
+  paths.push_back(normalized);
+}
+
+static std::vector<std::filesystem::path> libpq_search_dirs() {
+  std::vector<std::filesystem::path> dirs;
+  const auto exe_dir = executable_dir();
+  const auto cwd = current_working_dir();
+
+  add_unique_path(dirs, exe_dir);
+  add_unique_path(dirs, exe_dir.parent_path() / "lib");
+  add_unique_path(dirs, cwd / "bin");
+  add_unique_path(dirs, cwd / "lib");
+
+#ifdef _WIN32
+  const auto third_party_libpq = std::filesystem::path("third_party") / "postgresql" / "windows" / "x64" / "bin";
+#else
+  const auto third_party_libpq = std::filesystem::path("third_party") / "postgresql" / "linux" / "x64" / "lib";
+#endif
+
+  add_unique_path(dirs, cwd / third_party_libpq);
+  add_unique_path(dirs, exe_dir.parent_path().parent_path() / third_party_libpq);
+  add_unique_path(dirs, exe_dir.parent_path() / third_party_libpq);
+  return dirs;
+}
+
+#ifdef _WIN32
+static HMODULE try_load_libpq_from_dir(const std::filesystem::path& dir) {
+  const auto dll_path = dir / "libpq.dll";
+  if (!std::filesystem::exists(dll_path)) return nullptr;
+
+  const auto old_dir_size = GetDllDirectoryA(0, nullptr);
+  std::string old_dir;
+  if (old_dir_size > 0) {
+    old_dir.resize(old_dir_size);
+    const auto copied = GetDllDirectoryA(old_dir_size, old_dir.data());
+    old_dir.resize(copied);
+  }
+
+  const auto dir_text = dir.string();
+  SetDllDirectoryA(dir_text.c_str());
+  HMODULE handle = LoadLibraryA(dll_path.string().c_str());
+  SetDllDirectoryA(old_dir.empty() ? nullptr : old_dir.c_str());
+  return handle;
+}
+#else
+static void* try_load_libpq_from_dir(const std::filesystem::path& dir) {
+  const std::vector<std::string> names = {"libpq.so.5", "libpq.so"};
+  for (const auto& name : names) {
+    const auto so_path = dir / name;
+    if (!std::filesystem::exists(so_path)) continue;
+    if (auto* handle = dlopen(so_path.string().c_str(), RTLD_NOW)) return handle;
+  }
+  return nullptr;
+}
+#endif
+
+static common::Result<LibpqApi> load_libpq() {
+  LibpqApi api;
+  for (const auto& dir : libpq_search_dirs()) {
+    api.handle = try_load_libpq_from_dir(dir);
+    if (api.handle) break;
+  }
+
+#ifdef _WIN32
+  if (!api.handle) api.handle = LoadLibraryA("libpq.dll");
+#else
+  if (!api.handle) api.handle = dlopen("libpq.so.5", RTLD_NOW);
+  if (!api.handle) api.handle = dlopen("libpq.so", RTLD_NOW);
+#endif
+  if (!api.handle) {
+    return common::Result<LibpqApi>::Err(
+        common::ErrorCode::ConnectionFailed,
+        "libpq runtime library not found in install/bin, install/lib, third_party/postgresql, or system library paths");
+  }
+
+  bool ok = true;
+  ok = ok && bind_symbol(api, api.PQconnectdb, "PQconnectdb");
+  ok = ok && bind_symbol(api, api.PQstatus, "PQstatus");
+  ok = ok && bind_symbol(api, api.PQerrorMessage, "PQerrorMessage");
+  ok = ok && bind_symbol(api, api.PQexec, "PQexec");
+  ok = ok && bind_symbol(api, api.PQresultStatus, "PQresultStatus");
+  ok = ok && bind_symbol(api, api.PQntuples, "PQntuples");
+  ok = ok && bind_symbol(api, api.PQgetvalue, "PQgetvalue");
+  ok = ok && bind_symbol(api, api.PQclear, "PQclear");
+  ok = ok && bind_symbol(api, api.PQfinish, "PQfinish");
+  if (!ok) {
+    return common::Result<LibpqApi>::Err(common::ErrorCode::ConnectionFailed, "libpq runtime library is missing required symbols");
+  }
+  return common::Result<LibpqApi>::Ok(std::move(api));
+}
+
+static std::string csv_path(const std::string& dir_path, const std::string& filename) {
+  std::string p = dir_path;
+  if (!p.empty() && p.back() != '/' && p.back() != '\\') p += '/';
+  return p + filename;
+}
+
+static std::string json_value_to_string(const nlohmann::json& value) {
+  if (value.is_null()) return "";
+  if (value.is_boolean()) return value.get<bool>() ? "true" : "false";
+  if (value.is_string()) return value.get<std::string>();
+  if (value.is_number_integer()) return std::to_string(value.get<long long>());
+  if (value.is_number_unsigned()) return std::to_string(value.get<unsigned long long>());
+  if (value.is_number_float()) {
+    auto text = std::to_string(value.get<double>());
+    while (text.size() > 1 && text.back() == '0') text.pop_back();
+    if (!text.empty() && text.back() == '.') text.pop_back();
+    return text;
+  }
+  return value.dump();
+}
+
 static common::PointCategory parse_point_category(const std::string& s) {
-  if (s == "telemetry")      return common::PointCategory::Telemetry;
+  if (s == "telemetry") return common::PointCategory::Telemetry;
   if (s == "teleindication") return common::PointCategory::Teleindication;
-  if (s == "telecontrol")    return common::PointCategory::Telecontrol;
-  if (s == "teleadjust")    return common::PointCategory::Setting;
+  if (s == "telecontrol") return common::PointCategory::Telecontrol;
+  if (s == "teleadjust") return common::PointCategory::Setting;
   return common::PointCategory::Telemetry;
 }
 
 static common::DataType parse_data_type(const std::string& s) {
-  if (s == "bool")    return common::DataType::Bool;
-  if (s == "int16")   return common::DataType::Int16;
-  if (s == "uint16")  return common::DataType::Uint16;
-  if (s == "int32")   return common::DataType::Int32;
-  if (s == "uint32")  return common::DataType::Uint32;
+  if (s == "bool") return common::DataType::Bool;
+  if (s == "int16") return common::DataType::Int16;
+  if (s == "uint16") return common::DataType::Uint16;
+  if (s == "int32") return common::DataType::Int32;
+  if (s == "uint32") return common::DataType::Uint32;
   if (s == "float32") return common::DataType::Float32;
-  if (s == "int64")   return common::DataType::Int64;
-  if (s == "uint64")  return common::DataType::Uint64;
-  if (s == "double")  return common::DataType::Double;
+  if (s == "int64") return common::DataType::Int64;
+  if (s == "uint64") return common::DataType::Uint64;
+  if (s == "double") return common::DataType::Double;
   return common::DataType::Uint16;
 }
 
 static common::DeviceType parse_device_type(const std::string& s) {
-  if (s == "PV")          return common::DeviceType::PV;
-  if (s == "BESS")        return common::DeviceType::BESS;
-  if (s == "Meter")       return common::DeviceType::Meter;
-  if (s == "Inverter")    return common::DeviceType::Inverter;
-  if (s == "Grid")        return common::DeviceType::Grid;
+  if (s == "PV") return common::DeviceType::PV;
+  if (s == "BESS") return common::DeviceType::BESS;
+  if (s == "Meter") return common::DeviceType::Meter;
+  if (s == "Inverter") return common::DeviceType::Inverter;
+  if (s == "Grid") return common::DeviceType::Grid;
   if (s == "Transformer") return common::DeviceType::Transformer;
   return common::DeviceType::Unknown;
 }
 
-common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
-  auto csv_path = [&](const std::string& filename) {
-    std::string p = dir_path;
-    if (!p.empty() && p.back() != '/' && p.back() != '\\') p += '/';
-    return p + filename;
+static common::Result<TableMap> load_csv_tables(const std::string& dir_path) {
+  TableMap tables;
+  for (const auto& table_name : kRuntimeTables) {
+    auto result = parse_csv_file(csv_path(dir_path, table_name + ".csv"));
+    if (!result.is_ok()) {
+      if (table_name == "telecontrol" || table_name == "teleadjust") {
+        CsvTable empty;
+        empty.headers = kTableHeaders.at(table_name);
+        tables[table_name] = std::move(empty);
+        OPENEMS_LOG_D("ConfigLoader", table_name + ".csv not found or empty - skipping");
+        continue;
+      }
+      return common::Result<TableMap>::Err(result.error_code(), result.error_msg());
+    }
+    tables[table_name] = std::move(result.value());
+  }
+  return common::Result<TableMap>::Ok(std::move(tables));
+}
+
+static common::Result<TableMap> load_postgres_tables(const std::string& db_url) {
+  if (db_url.empty()) {
+    return common::Result<TableMap>::Err(common::ErrorCode::InvalidConfig, "OPENEMS_DB_URL is empty");
+  }
+
+  auto api_result = load_libpq();
+  if (!api_result.is_ok()) {
+    return common::Result<TableMap>::Err(api_result.error_code(), api_result.error_msg());
+  }
+  auto& api = api_result.value();
+
+  void* conn = api.PQconnectdb(db_url.c_str());
+  if (!conn || api.PQstatus(conn) != kConnectionOk) {
+    std::string error = conn ? api.PQerrorMessage(conn) : "failed to allocate PostgreSQL connection";
+    if (conn) api.PQfinish(conn);
+    return common::Result<TableMap>::Err(common::ErrorCode::ConnectionFailed, "PostgreSQL connect failed: " + error);
+  }
+
+  TableMap tables;
+  auto load_query_table = [&](const std::string& table_name,
+                              const std::string& sql,
+                              const std::vector<std::string>& headers) -> common::VoidResult {
+    void* res = api.PQexec(conn, sql.c_str());
+    if (!res || api.PQresultStatus(res) != kTuplesOk) {
+      std::string error = api.PQerrorMessage(conn);
+      if (res) api.PQclear(res);
+      return common::VoidResult::Err(common::ErrorCode::InvalidConfig,
+          "PostgreSQL structured config query failed for " + table_name + ": " + error);
+    }
+    CsvTable table;
+    table.headers = headers;
+    const int rows = api.PQntuples(res);
+    for (int row_index = 0; row_index < rows; ++row_index) {
+      CsvRow row;
+      for (size_t col = 0; col < headers.size(); ++col) {
+        row.fields.push_back(api.PQgetvalue(res, row_index, static_cast<int>(col)));
+      }
+      table.rows.push_back(std::move(row));
+    }
+    tables[table_name] = std::move(table);
+    api.PQclear(res);
+    return common::VoidResult::Ok();
   };
 
-  // 1. Read ems_config.csv
-  auto ems_cfg_result = parse_csv_file(csv_path("ems_config.csv"));
-  if (!ems_cfg_result.is_ok()) return common::Result<EmsConfig>::Err(ems_cfg_result.error_code(), ems_cfg_result.error_msg());
-  auto& ems_cfg_table = ems_cfg_result.value();
-  if (ems_cfg_table.rows.empty()) return common::Result<EmsConfig>::Err(common::ErrorCode::InvalidConfig, "ems_config.csv has no data rows");
+  std::vector<std::pair<std::string, std::string>> queries = {
+      {"ems_config", "SELECT log_level, default_poll_interval_ms::text, site_id FROM ems_config ORDER BY singleton LIMIT 1"},
+      {"site", "SELECT id, name, description FROM sites ORDER BY id"},
+      {"device", "SELECT id, site_id, name, type, protocol, ip, port::text, unit_id::text, poll_interval_ms::text, COALESCE(common_address::text, '') FROM devices ORDER BY id"},
+      {"telemetry", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'telemetry' ORDER BY id"},
+      {"teleindication", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'teleindication' ORDER BY id"},
+      {"telecontrol", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'telecontrol' ORDER BY id"},
+      {"teleadjust", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'teleadjust' ORDER BY id"},
+      {"modbus_mapping", "SELECT point_id, function_code::text, register_address::text, register_count::text, data_type, scale::text, offset_value::text FROM modbus_mappings ORDER BY point_id"},
+      {"iec104_mapping", "SELECT point_id, type_id::text, ioa::text, common_address::text, scale::text, cot::text FROM iec104_mappings ORDER BY point_id"},
+  };
+
+  for (const auto& item : queries) {
+    auto header_it = kTableHeaders.find(item.first);
+    auto query_result = load_query_table(item.first, item.second, header_it->second);
+    if (!query_result.is_ok()) {
+      api.PQfinish(conn);
+      return common::Result<TableMap>::Err(query_result.error_code(), query_result.error_msg());
+    }
+  }
+  api.PQfinish(conn);
+
+  for (const auto& table_name : kRuntimeTables) {
+    if (tables.find(table_name) == tables.end()) {
+      if (table_name == "telecontrol" || table_name == "teleadjust") {
+        CsvTable empty;
+        empty.headers = kTableHeaders.at(table_name);
+        tables[table_name] = std::move(empty);
+        continue;
+      }
+      return common::Result<TableMap>::Err(common::ErrorCode::InvalidConfig, "PostgreSQL config table missing: " + table_name);
+    }
+  }
+
+  return common::Result<TableMap>::Ok(std::move(tables));
+}
+
+static common::Result<EmsConfig> build_config_from_tables(const TableMap& tables) {
+  auto require_table = [&](const std::string& name) -> common::Result<const CsvTable*> {
+    auto it = tables.find(name);
+    if (it == tables.end()) {
+      return common::Result<const CsvTable*>::Err(common::ErrorCode::InvalidConfig, "Missing config table: " + name);
+    }
+    return common::Result<const CsvTable*>::Ok(&it->second);
+  };
+
+  auto ems_table_result = require_table("ems_config");
+  if (!ems_table_result.is_ok()) return common::Result<EmsConfig>::Err(ems_table_result.error_code(), ems_table_result.error_msg());
+  const auto& ems_cfg_table = *ems_table_result.value();
+  if (ems_cfg_table.rows.empty()) return common::Result<EmsConfig>::Err(common::ErrorCode::InvalidConfig, "ems_config has no data rows");
 
   EmsConfig config;
-  auto& ems_row = ems_cfg_table.rows[0];
+  const auto& ems_row = ems_cfg_table.rows[0];
   auto log_level_idx = ems_cfg_table.col_index("log_level");
   auto poll_idx = ems_cfg_table.col_index("default_poll_interval_ms");
   auto site_id_idx = ems_cfg_table.col_index("site_id");
@@ -59,12 +412,11 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
   config.default_poll_interval_ms = static_cast<uint32_t>(csv_int(ems_row, poll_idx.value_or(1), 1000));
   std::string site_id = csv_string(ems_row, site_id_idx.value_or(2), "site-001");
 
-  // 2. Read site.csv
-  auto site_result = parse_csv_file(csv_path("site.csv"));
-  if (!site_result.is_ok()) return common::Result<EmsConfig>::Err(site_result.error_code(), site_result.error_msg());
-  auto& site_table = site_result.value();
+  auto site_table_result = require_table("site");
+  if (!site_table_result.is_ok()) return common::Result<EmsConfig>::Err(site_table_result.error_code(), site_table_result.error_msg());
+  const auto& site_table = *site_table_result.value();
   auto* site_row = site_table.find("id", site_id);
-  if (!site_row) return common::Result<EmsConfig>::Err(common::ErrorCode::InvalidConfig, "site_id '" + site_id + "' not found in site.csv");
+  if (!site_row) return common::Result<EmsConfig>::Err(common::ErrorCode::InvalidConfig, "site_id '" + site_id + "' not found in site");
 
   auto site_name_idx = site_table.col_index("name");
   auto site_desc_idx = site_table.col_index("description");
@@ -72,10 +424,9 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
   config.site.name = csv_string(*site_row, site_name_idx.value_or(1), "Default Site");
   config.site.description = csv_string(*site_row, site_desc_idx.value_or(2), "");
 
-  // 3. Read device.csv
-  auto device_result = parse_csv_file(csv_path("device.csv"));
-  if (!device_result.is_ok()) return common::Result<EmsConfig>::Err(device_result.error_code(), device_result.error_msg());
-  auto& device_table = device_result.value();
+  auto device_table_result = require_table("device");
+  if (!device_table_result.is_ok()) return common::Result<EmsConfig>::Err(device_table_result.error_code(), device_table_result.error_msg());
+  const auto& device_table = *device_table_result.value();
 
   auto d_id_idx = device_table.col_index("id");
   auto d_name_idx = device_table.col_index("name");
@@ -102,11 +453,10 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
     config.site.devices.push_back(std::move(dc));
   }
 
-  // 4. Read telemetry.csv and teleindication.csv
-  auto load_point_table = [&](const std::string& filename, common::PointCategory cat) -> common::Result<CsvTable> {
-    auto result = parse_csv_file(csv_path(filename));
-    if (!result.is_ok()) return result;
-    auto& table = result.value();
+  auto load_point_table = [&](const std::string& table_name, common::PointCategory cat) -> common::VoidResult {
+    auto table_result = require_table(table_name);
+    if (!table_result.is_ok()) return common::VoidResult::Err(table_result.error_code(), table_result.error_msg());
+    const auto& table = *table_result.value();
 
     auto p_id_idx = table.col_index("id");
     auto p_name_idx = table.col_index("name");
@@ -129,33 +479,23 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
         dc.points.push_back(std::move(pc));
       }
     }
-    return result;
+    return common::VoidResult::Ok();
   };
 
-  auto telem_result = load_point_table("telemetry.csv", common::PointCategory::Telemetry);
-  if (!telem_result.is_ok()) return common::Result<EmsConfig>::Err(telem_result.error_code(), telem_result.error_msg());
-
-  auto ti_result = load_point_table("teleindication.csv", common::PointCategory::Teleindication);
-  if (!ti_result.is_ok()) return common::Result<EmsConfig>::Err(ti_result.error_code(), ti_result.error_msg());
-
-  auto tc_result = load_point_table("telecontrol.csv", common::PointCategory::Telecontrol);
-  // telecontrol.csv is optional — ignore if not found
-  if (!tc_result.is_ok()) {
-    OPENEMS_LOG_D("ConfigLoader", "telecontrol.csv not found or empty — skipping");
+  for (const auto& point_table : std::vector<std::pair<std::string, common::PointCategory>>{
+           {"telemetry", common::PointCategory::Telemetry},
+           {"teleindication", common::PointCategory::Teleindication},
+           {"telecontrol", common::PointCategory::Telecontrol},
+           {"teleadjust", common::PointCategory::Setting},
+       }) {
+    auto point_result = load_point_table(point_table.first, point_table.second);
+    if (!point_result.is_ok()) return common::Result<EmsConfig>::Err(point_result.error_code(), point_result.error_msg());
   }
 
-  auto ta_result = load_point_table("teleadjust.csv", common::PointCategory::Setting);
-  // teleadjust.csv is optional — ignore if not found
-  if (!ta_result.is_ok()) {
-    OPENEMS_LOG_D("ConfigLoader", "teleadjust.csv not found or empty — skipping");
-  }
+  auto mb_table_result = require_table("modbus_mapping");
+  if (!mb_table_result.is_ok()) return common::Result<EmsConfig>::Err(mb_table_result.error_code(), mb_table_result.error_msg());
+  const auto& mb_table = *mb_table_result.value();
 
-  // 5. Read modbus_mapping.csv
-  auto mb_result = parse_csv_file(csv_path("modbus_mapping.csv"));
-  if (!mb_result.is_ok()) return common::Result<EmsConfig>::Err(mb_result.error_code(), mb_result.error_msg());
-  auto& mb_table = mb_result.value();
-
-  auto m_pid_idx = mb_table.col_index("point_id");
   auto m_fc_idx = mb_table.col_index("function_code");
   auto m_ra_idx = mb_table.col_index("register_address");
   auto m_rc_idx = mb_table.col_index("register_count");
@@ -178,12 +518,10 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
     }
   }
 
-  // 6. Read iec104_mapping.csv
-  auto ic_result = parse_csv_file(csv_path("iec104_mapping.csv"));
-  if (!ic_result.is_ok()) return common::Result<EmsConfig>::Err(ic_result.error_code(), ic_result.error_msg());
-  auto& ic_table = ic_result.value();
+  auto ic_table_result = require_table("iec104_mapping");
+  if (!ic_table_result.is_ok()) return common::Result<EmsConfig>::Err(ic_table_result.error_code(), ic_table_result.error_msg());
+  const auto& ic_table = *ic_table_result.value();
 
-  auto i_pid_idx = ic_table.col_index("point_id");
   auto i_tid_idx = ic_table.col_index("type_id");
   auto i_ioa_idx = ic_table.col_index("ioa");
   auto i_ca_idx = ic_table.col_index("common_address");
@@ -207,4 +545,48 @@ common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
   return common::Result<EmsConfig>::Ok(std::move(config));
 }
 
-} // namespace openems::config
+static std::string env_or_empty(const char* name) {
+  const char* value = std::getenv(name);
+  return value ? std::string(value) : std::string();
+}
+
+}  // namespace
+
+common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
+  return load_from_csv(dir_path);
+}
+
+common::Result<EmsConfig> ConfigLoader::load_from_csv(const std::string& dir_path) {
+  auto tables_result = load_csv_tables(dir_path);
+  if (!tables_result.is_ok()) {
+    return common::Result<EmsConfig>::Err(tables_result.error_code(), tables_result.error_msg());
+  }
+  return build_config_from_tables(tables_result.value());
+}
+
+common::Result<EmsConfig> ConfigLoader::load_from_postgres(const std::string& db_url) {
+  auto tables_result = load_postgres_tables(db_url);
+  if (!tables_result.is_ok()) {
+    return common::Result<EmsConfig>::Err(tables_result.error_code(), tables_result.error_msg());
+  }
+  return build_config_from_tables(tables_result.value());
+}
+
+common::Result<EmsConfig> ConfigLoader::load(const std::string& source,
+                                             const std::string& dir_path,
+                                             const std::string& db_url) {
+  if (source == "csv") {
+    return load_from_csv(dir_path);
+  }
+
+  const std::string effective_db_url = db_url.empty() ? env_or_empty("OPENEMS_DB_URL") : db_url;
+  auto pg_result = load_from_postgres(effective_db_url);
+  if (pg_result.is_ok()) {
+    return pg_result;
+  }
+
+  OPENEMS_LOG_W("ConfigLoader", "PostgreSQL config load failed: " + pg_result.error_msg() + "; falling back to CSV: " + dir_path);
+  return load_from_csv(dir_path);
+}
+
+}  // namespace openems::config

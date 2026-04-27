@@ -8,7 +8,9 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <thread>
+#include <string>
 
 static std::atomic<bool> g_running{true};
 static void signal_handler(int) { g_running = false; }
@@ -83,13 +85,28 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
+  std::string source = "postgresql";
   std::string config_path = "config/tables";
   std::string shm_name = openems::rt_db::default_shm_name();
-  if (argc > 1) config_path = argv[1];
-  if (argc > 2) shm_name = argv[2];
+  std::string db_url;
+  if (const char* env_db_url = std::getenv("OPENEMS_DB_URL")) {
+    db_url = env_db_url;
+  }
+  if (argc > 1) {
+    std::string first = argv[1];
+    if (first == "postgresql" || first == "csv") {
+      source = first;
+      if (argc > 2) config_path = argv[2];
+      if (argc > 3) shm_name = argv[3];
+    } else {
+      // Backward compatibility: old usage was openems-rtdb-service [config_path] [shm_name].
+      config_path = first;
+      if (argc > 2) shm_name = argv[2];
+    }
+  }
 
-  OPENEMS_LOG_I("RtDbService", "Loading config: " + config_path);
-  auto cfg_result = openems::config::ConfigLoader::load(config_path);
+  OPENEMS_LOG_I("RtDbService", "Loading config source=" + source + " csv_path=" + config_path);
+  auto cfg_result = openems::config::ConfigLoader::load(source, config_path, db_url);
   if (!cfg_result.is_ok()) {
     OPENEMS_LOG_F("RtDbService", "Config failed: " + cfg_result.error_msg());
     return 1;

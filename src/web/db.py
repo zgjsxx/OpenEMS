@@ -58,15 +58,15 @@ class Database:
             self.last_error = "PostgreSQL driver not installed. Install psycopg[binary] or psycopg2."
 
     @contextmanager
-    def connect(self):
+    def connect(self, autocommit: bool = True):
         if not self.available or self.driver is None:
             raise RuntimeError(self.last_error or "Database unavailable.")
 
         if self.driver_name == "psycopg":
-            conn = self.driver.connect(self.db_url, autocommit=True)
+            conn = self.driver.connect(self.db_url, autocommit=autocommit)
         else:
             conn = self.driver.connect(self.db_url)
-            conn.autocommit = True
+            conn.autocommit = autocommit
 
         try:
             yield conn
@@ -147,6 +147,294 @@ class Database:
             self.available = False
             self.last_error = str(exc)
             return {"ok": False, "error": self.last_error}
+
+    def save_structured_config(self, tables: Dict[str, List[Dict[str, Any]]]) -> None:
+        """Persist normalized config editor tables into structured PostgreSQL tables."""
+        with self.connect(autocommit=False) as conn:
+            try:
+                with conn.cursor() as cursor:
+                    for table_name in (
+                        "topology_bindings",
+                        "topology_links",
+                        "topology_nodes",
+                        "alarm_rules",
+                        "iec104_mappings",
+                        "modbus_mappings",
+                        "points",
+                        "devices",
+                        "ems_config",
+                        "sites",
+                    ):
+                        cursor.execute(f"DELETE FROM {table_name}")
+
+                    for row in tables.get("site", []):
+                        cursor.execute(
+                            "INSERT INTO sites(id, name, description) VALUES (%s, %s, %s)",
+                            (row.get("id", ""), row.get("name", ""), row.get("description", "")),
+                        )
+
+                    for row in tables.get("ems_config", []):
+                        cursor.execute(
+                            """
+                            INSERT INTO ems_config(singleton, log_level, default_poll_interval_ms, site_id, updated_at)
+                            VALUES (TRUE, %s, %s, %s, NOW())
+                            """,
+                            (
+                                row.get("log_level", "info"),
+                                int(row.get("default_poll_interval_ms") or 1000),
+                                row.get("site_id", ""),
+                            ),
+                        )
+
+                    enabled_device_ids = {str(row.get("id", "")).strip() for row in tables.get("device", []) if str(row.get("id", "")).strip()}
+                    enabled_point_ids = set()
+
+                    for row in tables.get("device", []):
+                        common_address = row.get("common_address", "")
+                        cursor.execute(
+                            """
+                            INSERT INTO devices(
+                                id, site_id, name, type, protocol, ip, port, unit_id,
+                                poll_interval_ms, common_address
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("id", ""),
+                                row.get("site_id", ""),
+                                row.get("name", ""),
+                                row.get("type", ""),
+                                row.get("protocol", ""),
+                                row.get("ip", ""),
+                                int(row.get("port") or 0),
+                                int(row.get("unit_id") or 0),
+                                int(row.get("poll_interval_ms") or 0),
+                                int(common_address) if str(common_address).strip() else None,
+                            ),
+                        )
+
+                    for category, table_name in (
+                        ("telemetry", "telemetry"),
+                        ("teleindication", "teleindication"),
+                        ("telecontrol", "telecontrol"),
+                        ("teleadjust", "teleadjust"),
+                    ):
+                        for row in tables.get(table_name, []):
+                            if str(row.get("device_id", "")).strip() not in enabled_device_ids:
+                                continue
+                            point_id = str(row.get("id", "")).strip()
+                            if point_id:
+                                enabled_point_ids.add(point_id)
+                            cursor.execute(
+                                """
+                                INSERT INTO points(id, device_id, name, code, category, data_type, unit, writable)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    row.get("id", ""),
+                                    row.get("device_id", ""),
+                                    row.get("name", ""),
+                                    row.get("code", ""),
+                                    category,
+                                    row.get("data_type", ""),
+                                    row.get("unit", ""),
+                                    str(row.get("writable", "")).lower() == "true",
+                                ),
+                            )
+
+                    for row in tables.get("modbus_mapping", []):
+                        if str(row.get("point_id", "")).strip() not in enabled_point_ids:
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO modbus_mappings(
+                                point_id, function_code, register_address, register_count,
+                                data_type, scale, offset_value
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("point_id", ""),
+                                int(row.get("function_code") or 0),
+                                int(row.get("register_address") or 0),
+                                int(row.get("register_count") or 0),
+                                row.get("data_type", ""),
+                                float(row.get("scale") or 1.0),
+                                float(row.get("offset") or 0.0),
+                            ),
+                        )
+
+                    for row in tables.get("iec104_mapping", []):
+                        if str(row.get("point_id", "")).strip() not in enabled_point_ids:
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO iec104_mappings(point_id, type_id, ioa, common_address, scale, cot)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("point_id", ""),
+                                int(row.get("type_id") or 0),
+                                int(row.get("ioa") or 0),
+                                int(row.get("common_address") or 0),
+                                float(row.get("scale") or 1.0),
+                                int(row.get("cot") or 0),
+                            ),
+                        )
+
+                    for row in tables.get("alarm_rule", []):
+                        if str(row.get("point_id", "")).strip() not in enabled_point_ids:
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO alarm_rules(id, point_id, enabled, operator, threshold, severity, message)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("id", ""),
+                                row.get("point_id", ""),
+                                str(row.get("enabled", "")).lower() == "true",
+                                row.get("operator", ""),
+                                float(row.get("threshold") or 0.0),
+                                row.get("severity", ""),
+                                row.get("message", ""),
+                            ),
+                        )
+
+                    for row in tables.get("topology_node", []):
+                        cursor.execute(
+                            """
+                            INSERT INTO topology_nodes(id, site_id, name, type, device_id, x, y, enabled)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("id", ""),
+                                row.get("site_id", ""),
+                                row.get("name", ""),
+                                row.get("type", ""),
+                                row.get("device_id") or None,
+                                float(row.get("x") or 0.0),
+                                float(row.get("y") or 0.0),
+                                str(row.get("enabled", "")).lower() == "true",
+                            ),
+                        )
+
+                    for row in tables.get("topology_link", []):
+                        cursor.execute(
+                            """
+                            INSERT INTO topology_links(id, site_id, source_node_id, target_node_id, type, enabled)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("id", ""),
+                                row.get("site_id", ""),
+                                row.get("source_node_id", ""),
+                                row.get("target_node_id", ""),
+                                row.get("type", ""),
+                                str(row.get("enabled", "")).lower() == "true",
+                            ),
+                        )
+
+                    for row in tables.get("topology_binding", []):
+                        if str(row.get("point_id", "")).strip() not in enabled_point_ids:
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO topology_bindings(id, target_type, target_id, point_id, role, label)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                row.get("id", ""),
+                                row.get("target_type", ""),
+                                row.get("target_id", ""),
+                                row.get("point_id", ""),
+                                row.get("role", ""),
+                                row.get("label", ""),
+                            ),
+                        )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def load_structured_config(self) -> Dict[str, List[Dict[str, Any]]]:
+        def text(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            return str(value)
+
+        tables: Dict[str, List[Dict[str, Any]]] = {
+            "ems_config": [],
+            "site": [],
+            "device": [],
+            "telemetry": [],
+            "teleindication": [],
+            "telecontrol": [],
+            "teleadjust": [],
+            "alarm_rule": [],
+            "topology_node": [],
+            "topology_link": [],
+            "topology_binding": [],
+            "modbus_mapping": [],
+            "iec104_mapping": [],
+        }
+
+        for row in self.fetch_all("SELECT log_level, default_poll_interval_ms, site_id FROM ems_config ORDER BY singleton LIMIT 1"):
+            tables["ems_config"].append({
+                "log_level": text(row.get("log_level")),
+                "default_poll_interval_ms": text(row.get("default_poll_interval_ms")),
+                "site_id": text(row.get("site_id")),
+            })
+
+        for row in self.fetch_all("SELECT id, name, description FROM sites ORDER BY id"):
+            tables["site"].append({"id": text(row.get("id")), "name": text(row.get("name")), "description": text(row.get("description"))})
+
+        for row in self.fetch_all("SELECT id, site_id, name, type, protocol, ip, port, unit_id, poll_interval_ms, common_address FROM devices ORDER BY id"):
+            tables["device"].append({key: text(row.get(key)) for key in ("id", "site_id", "name", "type", "protocol", "ip", "port", "unit_id", "poll_interval_ms", "common_address")})
+
+        for row in self.fetch_all("SELECT id, device_id, name, code, category, data_type, unit, writable FROM points ORDER BY category, id"):
+            category = text(row.get("category"))
+            if category not in {"telemetry", "teleindication", "telecontrol", "teleadjust"}:
+                continue
+            tables[category].append({
+                "id": text(row.get("id")),
+                "device_id": text(row.get("device_id")),
+                "name": text(row.get("name")),
+                "code": text(row.get("code")),
+                "data_type": text(row.get("data_type")),
+                "unit": text(row.get("unit")),
+                "writable": text(row.get("writable")),
+            })
+
+        for row in self.fetch_all("SELECT point_id, function_code, register_address, register_count, data_type, scale, offset_value FROM modbus_mappings ORDER BY point_id"):
+            tables["modbus_mapping"].append({
+                "point_id": text(row.get("point_id")),
+                "function_code": text(row.get("function_code")),
+                "register_address": text(row.get("register_address")),
+                "register_count": text(row.get("register_count")),
+                "data_type": text(row.get("data_type")),
+                "scale": text(row.get("scale")),
+                "offset": text(row.get("offset_value")),
+            })
+
+        for row in self.fetch_all("SELECT point_id, type_id, ioa, common_address, scale, cot FROM iec104_mappings ORDER BY point_id"):
+            tables["iec104_mapping"].append({key: text(row.get(key)) for key in ("point_id", "type_id", "ioa", "common_address", "scale", "cot")})
+
+        for row in self.fetch_all("SELECT id, point_id, enabled, operator, threshold, severity, message FROM alarm_rules ORDER BY id"):
+            tables["alarm_rule"].append({key: text(row.get(key)) for key in ("id", "point_id", "enabled", "operator", "threshold", "severity", "message")})
+
+        for row in self.fetch_all("SELECT id, site_id, name, type, device_id, x, y, enabled FROM topology_nodes ORDER BY id"):
+            tables["topology_node"].append({key: text(row.get(key)) for key in ("id", "site_id", "name", "type", "device_id", "x", "y", "enabled")})
+
+        for row in self.fetch_all("SELECT id, site_id, source_node_id, target_node_id, type, enabled FROM topology_links ORDER BY id"):
+            tables["topology_link"].append({key: text(row.get(key)) for key in ("id", "site_id", "source_node_id", "target_node_id", "type", "enabled")})
+
+        for row in self.fetch_all("SELECT id, target_type, target_id, point_id, role, label FROM topology_bindings ORDER BY id"):
+            tables["topology_binding"].append({key: text(row.get(key)) for key in ("id", "target_type", "target_id", "point_id", "role", "label")})
+
+        return tables
 
     def ensure_default_admin(self) -> None:
         username = (os.getenv("OPENEMS_ADMIN_USERNAME") or "admin").strip()
