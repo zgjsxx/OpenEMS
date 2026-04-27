@@ -20,6 +20,14 @@
 
 namespace openems::rt_db {
 
+std::string default_shm_name() {
+#ifdef _WIN32
+  return "Local\\openems_rt_db";
+#else
+  return "/openems_rt_db";
+#endif
+}
+
 static uint64_t now_ms() {
   auto now = std::chrono::system_clock::now();
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -92,15 +100,17 @@ static void* shm_attach(const std::string& name, size_t* out_size, void** out_ha
 #endif
 }
 
-static void shm_cleanup(void* handle, void* addr, size_t size, bool is_creator) {
+static void shm_cleanup(void* handle, void* addr, size_t size, bool is_creator, const std::string& name) {
 #ifdef _WIN32
   if (addr) UnmapViewOfFile(addr);
   if (handle) CloseHandle(static_cast<HANDLE>(handle));
 #else
   if (addr) munmap(addr, size);
-  int fd = static_cast<int>(reinterpret_cast<intptr_t>(handle));
-  if (fd >= 0) close(fd);
-  if (is_creator) shm_unlink("openems_rt_db");
+  if (handle) {
+    int fd = static_cast<int>(reinterpret_cast<intptr_t>(handle));
+    if (fd >= 0) close(fd);
+  }
+  if (is_creator && !name.empty()) shm_unlink(name.c_str());
 #endif
 }
 
@@ -110,8 +120,10 @@ RtDb::RtDb(const std::string& shm_name, bool creator)
     : shm_name_(shm_name), is_creator_(creator) {}
 
 RtDb::~RtDb() {
-  unmap_memory();
-  shm_cleanup(file_handle_, mapped_addr_, mapped_size_, is_creator_);
+  shm_cleanup(file_handle_, mapped_addr_, mapped_size_, is_creator_, shm_name_);
+  file_handle_ = nullptr;
+  mapped_addr_ = nullptr;
+  mapped_size_ = 0;
 }
 
 common::Result<RtDb*> RtDb::create(const std::string& shm_name,
@@ -190,7 +202,7 @@ common::Result<RtDb*> RtDb::attach(const std::string& shm_name) {
 
   auto* hdr = static_cast<ShmHeader*>(addr);
   if (hdr->magic != kMagic || hdr->version != kVersion) {
-    shm_cleanup(handle, addr, shm_size, false);
+    shm_cleanup(handle, addr, shm_size, false, shm_name);
     delete db;
     return common::Result<RtDb*>::Err(
         common::ErrorCode::InvalidConfig,
@@ -319,6 +331,15 @@ common::VoidResult RtDb::register_command_point(const common::PointId& pid) {
     }
   }
   return common::VoidResult::Err(common::ErrorCode::InvalidArgument, "No empty command slots");
+}
+
+void RtDb::set_site_info(const common::SiteId& site_id, const std::string& site_name) {
+  if (!header_) return;
+  std::lock_guard lock(process_mutex_);
+  std::memset(header_->site_id, 0, kMaxSiteIdLen);
+  std::memset(header_->site_name, 0, kMaxSiteNameLen);
+  std::strncpy(header_->site_id, site_id.c_str(), kMaxSiteIdLen - 1);
+  std::strncpy(header_->site_name, site_name.c_str(), kMaxSiteNameLen - 1);
 }
 
 int32_t RtDb::find_point_index(const common::PointId& pid) const {

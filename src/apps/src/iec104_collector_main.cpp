@@ -1,5 +1,5 @@
 // src/apps/src/iec104_collector_main.cpp
-// IEC104 Collector process: creates RtDb, connects IEC104 devices, receives ASDU data, writes to RtDb
+// IEC104 Collector process: attaches to RtDb, connects IEC104 devices, receives ASDU data, writes to RtDb
 #include "openems/config/config_loader.h"
 #include "openems/config/ems_config.h"
 #include "openems/model/site.h"
@@ -38,41 +38,19 @@ static openems::model::SitePtr build_iec104_site(const openems::config::EmsConfi
   return site;
 }
 
-static uint32_t count_all_points(const openems::config::EmsConfig& cfg) {
-  uint32_t n = 0;
-  for (auto& dc : cfg.site.devices)
-    if (dc.protocol == "iec104")
-      for (auto& pc : dc.points) n++;
-  return n;
-}
-
-static uint32_t count_telemetry(const openems::config::EmsConfig& cfg) {
-  uint32_t n = 0;
-  for (auto& dc : cfg.site.devices)
-    if (dc.protocol == "iec104")
-      for (auto& pc : dc.points)
-        if (pc.category != openems::common::PointCategory::Teleindication) n++;
-  return n;
-}
-
-static uint32_t count_teleindication(const openems::config::EmsConfig& cfg) {
-  uint32_t n = 0;
-  for (auto& dc : cfg.site.devices)
-    if (dc.protocol == "iec104")
-      for (auto& pc : dc.points)
-        if (pc.category == openems::common::PointCategory::Teleindication) n++;
-  return n;
-}
-
-static void register_rtdb_points(openems::rt_db::RtDb* db, const openems::config::EmsConfig& cfg) {
-  for (auto& dc : cfg.site.devices) {
-    if (dc.protocol != "iec104") continue;
-    for (auto& pc : dc.points) {
-      uint8_t category = 0;
-      if (pc.category == openems::common::PointCategory::Teleindication) category = 1;
-      db->register_point(pc.id, dc.id, category, static_cast<uint8_t>(pc.data_type), pc.unit);
+static openems::rt_db::RtDb* wait_for_rtdb(const std::string& shm_name) {
+  while (g_running.load()) {
+    auto attach_result = openems::rt_db::RtDb::attach(shm_name);
+    if (attach_result.is_ok()) {
+      OPENEMS_LOG_I("IEC104Collector", "Attached to RtDb: " + shm_name);
+      return attach_result.value();
     }
+
+    OPENEMS_LOG_W("IEC104Collector",
+        "RtDb is not ready, retrying in 2 seconds: " + attach_result.error_msg());
+    std::this_thread::sleep_for(std::chrono::seconds(2));
   }
+  return nullptr;
 }
 
 int main(int argc, char* argv[]) {
@@ -80,7 +58,9 @@ int main(int argc, char* argv[]) {
   std::signal(SIGTERM, signal_handler);
 
   std::string config_path = "config/tables";
+  std::string shm_name = openems::rt_db::default_shm_name();
   if (argc > 1) config_path = argv[1];
+  if (argc > 2) shm_name = argv[2];
 
   OPENEMS_LOG_I("IEC104Collector", "Loading config: " + config_path);
   auto cfg_result = openems::config::ConfigLoader::load(config_path);
@@ -99,30 +79,11 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // Create or attach RtDb shared memory
-  std::string shm_name = "Local\\openems_rt_db";
-  uint32_t telem = count_telemetry(cfg);
-  uint32_t ti = count_teleindication(cfg);
-  uint32_t total = telem + ti;
-
-  // If Modbus collector already created the RtDb, just attach
-  openems::rt_db::RtDb* db = nullptr;
-  auto attach_result = openems::rt_db::RtDb::attach(shm_name);
-  if (attach_result.is_ok()) {
-    db = attach_result.value();
-    OPENEMS_LOG_I("IEC104Collector", "Attached to existing RtDb");
-  } else {
-    // Create new if not exists
-    auto create_result = openems::rt_db::RtDb::create(shm_name, telem, ti, 0);
-    if (!create_result.is_ok()) {
-      OPENEMS_LOG_F("IEC104Collector", "RtDb failed: " + create_result.error_msg());
-      return 1;
-    }
-    db = create_result.value();
-    OPENEMS_LOG_I("IEC104Collector", "Created new RtDb");
+  auto* db = wait_for_rtdb(shm_name);
+  if (!db) {
+    OPENEMS_LOG_F("IEC104Collector", "Shutdown before RtDb became available.");
+    return 1;
   }
-
-  register_rtdb_points(db, cfg);
 
   // Create IEC104 clients for each device
   std::vector<openems::iec104::Iec104ClientPtr> clients;

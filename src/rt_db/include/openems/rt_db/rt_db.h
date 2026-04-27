@@ -12,6 +12,8 @@
 
 namespace openems::rt_db {
 
+std::string default_shm_name();
+
 // Read result for a single point
 struct TelemetryReadResult {
   double   value;
@@ -65,7 +67,7 @@ struct SiteSnapshot {
 
 class RtDb {
 public:
-  // Create shared memory region (collector process)
+  // Create shared memory region (RtDb service process)
   static common::Result<RtDb*> create(const std::string& shm_name,
                                        uint32_t telemetry_count,
                                        uint32_t teleindication_count,
@@ -88,6 +90,8 @@ public:
 
   // Register a command slot for a writable point
   common::VoidResult register_command_point(const common::PointId& pid);
+
+  void set_site_info(const common::SiteId& site_id, const std::string& site_name);
 
   // Write telemetry value (categories 0, 2, 3)
   void write_telemetry(const common::PointId& pid,

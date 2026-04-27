@@ -1,6 +1,16 @@
 # src/apps/CMakeLists.txt
 
 # Process 1: Modbus Collector — creates RtDb, polls Modbus devices, writes to shared memory
+add_executable(openems-rtdb-service
+  src/rtdb_service_main.cpp
+)
+target_link_libraries(openems-rtdb-service PRIVATE
+  openems_common
+  openems_utils
+  openems_config
+  openems_rt_db
+)
+
 add_executable(openems-modbus-collector
   src/collector_main.cpp
 )
@@ -59,6 +69,7 @@ target_link_libraries(openems-history PRIVATE
 )
 
 set(OPENEMS_APP_TARGETS
+  openems-rtdb-service
   openems-modbus-collector
   openems-viewer
   openems-alarm
@@ -85,6 +96,7 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/
     PATTERN "*.txt"
     PATTERN "*.md"
     PATTERN "*.ps1"
+    PATTERN "*.sh"
     PATTERN "__pycache__" EXCLUDE
     PATTERN "install_scripts" EXCLUDE
     PATTERN "*_local.ps1" EXCLUDE
@@ -93,7 +105,9 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/install_scripts/
   DESTINATION .
-  FILES_MATCHING PATTERN "*.ps1"
+  FILES_MATCHING
+    PATTERN "*.ps1"
+    PATTERN "*.sh"
 )
 
 install(CODE [[

@@ -281,7 +281,7 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  std::string shm_name = "Local\\openems_rt_db";
+  std::string shm_name = openems::rt_db::default_shm_name();
   std::string output_path = "runtime/alarms_active.json";
   std::string config_path = "config/tables";
   if (argc > 1) shm_name = argv[1];
