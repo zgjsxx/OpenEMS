@@ -870,8 +870,8 @@ async def api_comm_save(request: Request, req: ConfigEditorRequest):
                         "openems-rtdb-service",
                         "openems-modbus-collector",
                         "openems-iec104-collector",
-                        "openems-alarm",
                     ],
+                    "auto_reload": "openems-alarm (告警规则每30秒自动重载，无需重启)",
                 })
             except Exception as exc:
                 result = {
@@ -1064,7 +1064,7 @@ async def api_strategy_save(request: Request, req: StrategySaveRequest):
                 details="; ".join(errors) if errors else "", user=user)
     if errors:
         return _json_error("; ".join(errors), 400)
-    return JSONResponse({"ok": True, "message": "策略配置已保存，需要重启 openems-strategy-engine 使其生效。"})
+    return JSONResponse({"ok": True, "message": "策略配置已保存，将在 30 秒内自动生效，无需重启。"})
 
 
 @app.get("/api/strategy/runtime")

@@ -325,8 +325,9 @@ int main(int argc, char* argv[]) {
     OPENEMS_LOG_W("Alarm", "No enabled alarm rules found in PostgreSQL.");
   }
 
-  OPENEMS_LOG_I("Alarm", "Running. Checking every 2 seconds.");
+  OPENEMS_LOG_I("Alarm", "Running. Checking every 2 seconds, reloading rules every 30 seconds.");
   std::unordered_map<std::string, uint64_t> trigger_times;
+  int reload_cycle = 0;
   int exit_code = 0;
   while (g_running.load()) {
     if (!db.conn || db.api.PQstatus(db.conn) != 0) {
@@ -337,6 +338,15 @@ int main(int argc, char* argv[]) {
       }
       rules = load_alarm_rules(db);
     }
+
+    // Periodic reload: re-read alarm rules from PostgreSQL every 30 seconds
+    if (reload_cycle % 15 == 0) {
+      auto new_rules = load_alarm_rules(db);
+      if (!new_rules.empty()) {
+        rules = std::move(new_rules);
+      }
+    }
+    ++reload_cycle;
 
     auto alarms = collect_active_alarms(rt_db, rules);
     std::unordered_map<std::string, uint64_t> active_trigger_times;
