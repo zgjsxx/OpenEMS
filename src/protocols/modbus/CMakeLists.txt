@@ -2,6 +2,8 @@
 add_library(openems_modbus
   src/modbus_tcp_client.cpp
   src/modbus_data_parser.cpp
+  src/modbus_rtu_client.cpp
+  src/serial_port.cpp
 )
 
 target_include_directories(openems_modbus PUBLIC

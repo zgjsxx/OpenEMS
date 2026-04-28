@@ -1,12 +1,15 @@
 // src/apps/src/collector_main.cpp
 // Modbus Collector process: attaches to RtDb, polls Modbus devices, writes to RtDb
 // Also handles telecontrol/teleadjust write commands via ControlService
+// Supports both Modbus TCP and Modbus RTU protocols
 #include "openems/config/config_loader.h"
 #include "openems/config/ems_config.h"
 #include "openems/model/site.h"
 #include "openems/model/device.h"
 #include "openems/model/point.h"
+#include "openems/modbus/imodbus_client.h"
 #include "openems/modbus/modbus_tcp_client.h"
+#include "openems/modbus/modbus_rtu_client.h"
 #include "openems/collector/polling_service.h"
 #include "openems/collector/control_service.h"
 #include "openems/rt_db/rt_db.h"
@@ -25,12 +28,13 @@ static void signal_handler(int) { g_running = false; }
 
 static openems::model::SitePtr build_site(const openems::config::EmsConfig& cfg) {
   auto site = openems::model::SiteCreate(cfg.site.id, cfg.site.name, cfg.site.description);
-  // Only process Modbus-TCP devices
   for (auto& dc : cfg.site.devices) {
-    if (dc.protocol != "modbus-tcp") continue;
+    // 支持 modbus-tcp 和 modbus-rtu，跳过 iec104 等其他协议
+    if (dc.protocol != "modbus-tcp" && dc.protocol != "modbus-rtu") continue;
 
     auto device = openems::model::DeviceCreate(
-        dc.id, dc.name, dc.type, dc.ip, dc.port, dc.unit_id, dc.poll_interval_ms);
+        dc.id, dc.name, dc.type, dc.ip, dc.port, dc.unit_id, dc.poll_interval_ms,
+        dc.protocol, dc.serial_port, dc.baud_rate, dc.parity, dc.data_bits, dc.stop_bits);
     for (auto& pc : dc.points) {
       auto point = openems::model::PointCreate(
           pc.id, pc.name, pc.code, pc.category, pc.data_type, pc.unit, pc.writable);
@@ -83,19 +87,47 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Create shared Modbus clients for both poll and control tasks
-  std::unordered_map<openems::common::DeviceId, openems::modbus::ModbusTcpClientPtr> modbus_clients;
+  // Create shared Modbus clients (TCP or RTU) for both poll and control tasks
+  std::unordered_map<openems::common::DeviceId, openems::modbus::IModbusClientPtr> modbus_clients;
+
+  // RTU 串口是独占资源，同一串口的多个设备共享一个 RtuClient
+  std::unordered_map<std::string, openems::modbus::ModbusRtuClientPtr> rtu_serial_clients;
 
   for (auto& device : site->devices()) {
-    openems::modbus::ModbusConfig mb_cfg;
-    mb_cfg.ip = device->ip();
-    mb_cfg.port = device->port();
-    mb_cfg.unit_id = device->unit_id();
-    mb_cfg.timeout_ms = 3000;
+    if (device->protocol() == "modbus-tcp") {
+      openems::modbus::ModbusConfig mb_cfg;
+      mb_cfg.ip = device->ip();
+      mb_cfg.port = device->port();
+      mb_cfg.unit_id = device->unit_id();
+      mb_cfg.timeout_ms = 3000;
 
-    auto client = openems::modbus::ModbusTcpClientCreate(mb_cfg);
-    client->connect();
-    modbus_clients[device->id()] = client;
+      auto client = openems::modbus::ModbusTcpClientCreate(mb_cfg);
+      client->connect();
+      modbus_clients[device->id()] = std::static_pointer_cast<openems::modbus::IModbusClient>(client);
+
+    } else if (device->protocol() == "modbus-rtu") {
+      // 同一串口共享客户端
+      std::string sp_key = device->serial_port();
+      auto it = rtu_serial_clients.find(sp_key);
+      if (it == rtu_serial_clients.end()) {
+        openems::modbus::ModbusRtuConfig rtu_cfg;
+        rtu_cfg.serial_port = device->serial_port();
+        rtu_cfg.baud_rate = device->baud_rate();
+        rtu_cfg.parity = device->parity();
+        rtu_cfg.data_bits = device->data_bits();
+        rtu_cfg.stop_bits = device->stop_bits();
+        rtu_cfg.unit_id = device->unit_id();
+        rtu_cfg.timeout_ms = 3000;
+
+        auto rtu_client = openems::modbus::ModbusRtuClientCreate(rtu_cfg);
+        rtu_client->connect();
+        rtu_serial_clients[sp_key] = rtu_client;
+        modbus_clients[device->id()] = std::static_pointer_cast<openems::modbus::IModbusClient>(rtu_client);
+      } else {
+        // 共享同一串口客户端（注意: unit_id 可能不同，RTU 串口独占）
+        modbus_clients[device->id()] = std::static_pointer_cast<openems::modbus::IModbusClient>(it->second);
+      }
+    }
   }
 
   // Setup polling tasks — each writes to RtDb

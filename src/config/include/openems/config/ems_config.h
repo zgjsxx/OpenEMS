@@ -31,8 +31,14 @@ struct DeviceConfig {
   uint16_t port;
   uint8_t unit_id;
   uint32_t poll_interval_ms;
-  std::string protocol = "modbus-tcp";  // "modbus-tcp" or "iec104"
+  std::string protocol = "modbus-tcp";  // "modbus-tcp", "modbus-rtu", or "iec104"
   uint16_t iec104_common_address = 1;
+  // RTU 串口参数
+  std::string serial_port;    // 默认空
+  uint32_t baud_rate = 9600;
+  char parity = 'N';
+  uint8_t data_bits = 8;
+  uint8_t stop_bits = 1;
   std::vector<PointConfig> points;
 };
 

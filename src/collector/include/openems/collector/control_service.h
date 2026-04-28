@@ -13,6 +13,7 @@
 #include "openems/common/result.h"
 #include "openems/common/base_interface.h"
 #include "openems/model/device.h"
+#include "openems/modbus/imodbus_client.h"
 #include "openems/modbus/modbus_tcp_client.h"
 #include "openems/rt_db/rt_db.h"
 
@@ -20,8 +21,14 @@ namespace openems::collector {
 
 class DeviceControlTask {
 public:
+  // IModbusClientPtr 构造（支持 TCP 和 RTU）
   DeviceControlTask(model::DevicePtr device,
-                    modbus::ModbusTcpClientPtr client,
+                    modbus::IModbusClientPtr client,
+                    rt_db::RtDb* rtdb);
+
+  // ModbusTcpClientPtr 构造（向后兼容）
+  DeviceControlTask(model::DevicePtr device,
+                    modbus::ModbusTcpClientPtr tcp_client,
                     rt_db::RtDb* rtdb);
 
   common::VoidResult execute_pending_commands();
@@ -37,7 +44,7 @@ private:
                                     const model::ModbusPointMapping& mapping);
 
   model::DevicePtr device_;
-  modbus::ModbusTcpClientPtr client_;
+  modbus::IModbusClientPtr client_;
   rt_db::RtDb* rtdb_;
 };
 
@@ -45,7 +52,7 @@ using DeviceControlTaskPtr = std::shared_ptr<DeviceControlTask>;
 
 inline DeviceControlTaskPtr DeviceControlTaskCreate(
     model::DevicePtr device,
-    modbus::ModbusTcpClientPtr client,
+    modbus::IModbusClientPtr client,
     rt_db::RtDb* rtdb) {
   return std::make_shared<DeviceControlTask>(std::move(device), std::move(client), rtdb);
 }

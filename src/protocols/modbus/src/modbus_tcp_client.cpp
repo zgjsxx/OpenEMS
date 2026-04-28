@@ -133,6 +133,10 @@ static void ensure_wsa_init() {
 
 // ===== ModbusTcpClient 实现 =====
 
+std::string ModbusTcpClient::connection_info() const {
+  return config_.ip + ":" + std::to_string(config_.port);
+}
+
 ModbusTcpClient::ModbusTcpClient(const ModbusConfig& config)
     : config_(config) {
   ensure_wsa_init();
@@ -249,7 +253,7 @@ common::VoidResult ModbusTcpClient::do_connect() {
   OPENEMS_LOG_I("ModbusTcpClient",
       "Connected to " + config_.ip + ":" + std::to_string(config_.port));
 
-  if (conn_cb_) conn_cb_(true, config_.ip, config_.port);
+  if (conn_cb_) conn_cb_(true, connection_info());
   return common::VoidResult::Ok();
 }
 
@@ -265,7 +269,7 @@ void ModbusTcpClient::disconnect() {
   }
   connected_ = false;
   OPENEMS_LOG_I("ModbusTcpClient", "Disconnected from " + config_.ip + ":" + std::to_string(config_.port));
-  if (conn_cb_) conn_cb_(false, config_.ip, config_.port);
+  if (conn_cb_) conn_cb_(false, connection_info());
 }
 
 bool ModbusTcpClient::is_connected() const {

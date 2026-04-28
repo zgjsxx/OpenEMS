@@ -24,4 +24,11 @@ constexpr uint8_t ModbusWriteSingleCoil       = 5;
 constexpr uint8_t ModbusWriteSingleRegister   = 6;
 constexpr uint8_t ModbusWriteMultipleRegisters = 16;
 
+// Modbus RTU 默认值
+constexpr uint32_t DefaultModbusRtuBaudRate = 9600;
+constexpr char     DefaultModbusRtuParity = 'N';
+constexpr uint8_t  DefaultModbusRtuDataBits = 8;
+constexpr uint8_t  DefaultModbusRtuStopBits = 1;
+constexpr uint32_t DefaultModbusRtuInterFrameDelayMs = 0;  // 0=自动按波特率计算
+
 } // namespace openems::common::constants

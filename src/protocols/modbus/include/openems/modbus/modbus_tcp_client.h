@@ -9,10 +9,9 @@
 #include <functional>
 #include <memory>
 #include <chrono>
-#include <string>
-#include <vector>
 #include "openems/common/result.h"
 #include "openems/common/types.h"
+#include "openems/modbus/imodbus_client.h"
 
 namespace openems::modbus {
 
@@ -25,40 +24,37 @@ struct ModbusConfig {
   uint32_t max_reconnect_attempts = 3;
 };
 
-// Modbus 读取结果
-struct ModbusReadResult {
-  std::vector<uint16_t> registers;   // 寄存器读取结果
-  std::vector<bool> coils;           // coils / discrete inputs 结果
-};
-
 // 连接状态回调
-using ConnectionCallback = std::function<void(bool connected, const std::string& ip, uint16_t port)>;
+// 旧签名: (bool connected, const std::string& ip, uint16_t port)
+// 新签名: (bool connected, const std::string& info) — 与 IModbusClient 一致
+// ModbusTcpClient 内部将旧签名适配为新签名
 
-class ModbusTcpClient {
+class ModbusTcpClient : public IModbusClient {
 public:
   explicit ModbusTcpClient(const ModbusConfig& config);
   ~ModbusTcpClient();
 
   // 连接管理
-  common::VoidResult connect();
-  void disconnect();
-  bool is_connected() const;
+  common::VoidResult connect() override;
+  void disconnect() override;
+  bool is_connected() const override;
   const ModbusConfig& config() const { return config_; }
+  std::string connection_info() const override;
 
   // 断线重连
-  common::VoidResult reconnect();
-  void set_connection_callback(ConnectionCallback cb);
+  common::VoidResult reconnect() override;
+  void set_connection_callback(ConnectionCallback cb) override;
 
   // Modbus 读取
-  common::Result<ModbusReadResult> read_holding_registers(uint16_t address, uint16_t count);
-  common::Result<ModbusReadResult> read_input_registers(uint16_t address, uint16_t count);
-  common::Result<ModbusReadResult> read_coils(uint16_t address, uint16_t count);
-  common::Result<ModbusReadResult> read_discrete_inputs(uint16_t address, uint16_t count);
+  common::Result<ModbusReadResult> read_holding_registers(uint16_t address, uint16_t count) override;
+  common::Result<ModbusReadResult> read_input_registers(uint16_t address, uint16_t count) override;
+  common::Result<ModbusReadResult> read_coils(uint16_t address, uint16_t count) override;
+  common::Result<ModbusReadResult> read_discrete_inputs(uint16_t address, uint16_t count) override;
 
   // Modbus 写入（预留）
-  common::VoidResult write_single_register(uint16_t address, uint16_t value);
-  common::VoidResult write_multiple_registers(uint16_t address, const std::vector<uint16_t>& values);
-  common::VoidResult write_single_coil(uint16_t address, bool value);
+  common::VoidResult write_single_register(uint16_t address, uint16_t value) override;
+  common::VoidResult write_multiple_registers(uint16_t address, const std::vector<uint16_t>& values) override;
+  common::VoidResult write_single_coil(uint16_t address, bool value) override;
 
 private:
   // 内部 TCP 通信

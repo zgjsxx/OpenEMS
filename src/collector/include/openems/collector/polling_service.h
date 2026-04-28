@@ -14,6 +14,7 @@
 #include "openems/common/result.h"
 #include "openems/common/base_interface.h"
 #include "openems/model/device.h"
+#include "openems/modbus/imodbus_client.h"
 #include "openems/modbus/modbus_tcp_client.h"
 #include "openems/rt_db/rt_db.h"
 
@@ -29,8 +30,14 @@ struct PollingStats {
 
 class DevicePollTask {
 public:
+  // IModbusClientPtr 构造（支持 TCP 和 RTU）
   DevicePollTask(model::DevicePtr device,
-                 modbus::ModbusTcpClientPtr client,
+                 modbus::IModbusClientPtr client,
+                 rt_db::RtDb* rtdb);
+
+  // ModbusTcpClientPtr 构造（向后兼容）
+  DevicePollTask(model::DevicePtr device,
+                 modbus::ModbusTcpClientPtr tcp_client,
                  rt_db::RtDb* rtdb);
 
   common::VoidResult poll_once();
@@ -50,7 +57,7 @@ private:
   common::VoidResult poll_register_group(const RegisterGroup& group);
 
   model::DevicePtr device_;
-  modbus::ModbusTcpClientPtr client_;
+  modbus::IModbusClientPtr client_;
   rt_db::RtDb* rtdb_;
   PollingStats stats_;
 };
@@ -59,7 +66,7 @@ using DevicePollTaskPtr = std::shared_ptr<DevicePollTask>;
 
 inline DevicePollTaskPtr DevicePollTaskCreate(
     model::DevicePtr device,
-    modbus::ModbusTcpClientPtr client,
+    modbus::IModbusClientPtr client,
     rt_db::RtDb* rtdb) {
   return std::make_shared<DevicePollTask>(std::move(device), std::move(client), rtdb);
 }

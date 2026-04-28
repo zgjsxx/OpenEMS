@@ -8,10 +8,18 @@ namespace openems::collector {
 
 DeviceControlTask::DeviceControlTask(
     model::DevicePtr device,
-    modbus::ModbusTcpClientPtr client,
+    modbus::IModbusClientPtr client,
     rt_db::RtDb* rtdb)
     : device_(std::move(device)),
       client_(std::move(client)),
+      rtdb_(rtdb) {}
+
+DeviceControlTask::DeviceControlTask(
+    model::DevicePtr device,
+    modbus::ModbusTcpClientPtr tcp_client,
+    rt_db::RtDb* rtdb)
+    : device_(std::move(device)),
+      client_(std::static_pointer_cast<modbus::IModbusClient>(tcp_client)),
       rtdb_(rtdb) {}
 
 uint8_t DeviceControlTask::read_back_fc(uint8_t write_fc) {

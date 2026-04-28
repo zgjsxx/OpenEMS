@@ -25,6 +25,13 @@ std::string error_code_to_string(ErrorCode code) {
     case ErrorCode::SiteNotFound:        return "Site not found";
     case ErrorCode::DataQualityBad:      return "Data quality bad";
     case ErrorCode::NotSupported:        return "Not supported";
+    case ErrorCode::SerialPortError:     return "Serial port error";
+    case ErrorCode::SerialPortOpenFailed: return "Serial port open failed";
+    case ErrorCode::SerialPortConfigFailed: return "Serial port config failed";
+    case ErrorCode::SerialPortWriteFailed: return "Serial port write failed";
+    case ErrorCode::SerialPortReadFailed: return "Serial port read failed";
+    case ErrorCode::ModbusRtuCrcError:  return "Modbus RTU CRC error";
+    case ErrorCode::ModbusRtuFrameError: return "Modbus RTU frame error";
     default:                             return "Unknown error code";
   }
 }

@@ -28,10 +28,18 @@ static std::string join_bits(const std::vector<bool>& values) {
 
 DevicePollTask::DevicePollTask(
     model::DevicePtr device,
-    modbus::ModbusTcpClientPtr client,
+    modbus::IModbusClientPtr client,
     rt_db::RtDb* rtdb)
     : device_(std::move(device)),
       client_(std::move(client)),
+      rtdb_(rtdb) {}
+
+DevicePollTask::DevicePollTask(
+    model::DevicePtr device,
+    modbus::ModbusTcpClientPtr tcp_client,
+    rt_db::RtDb* rtdb)
+    : device_(std::move(device)),
+      client_(std::static_pointer_cast<modbus::IModbusClient>(tcp_client)),
       rtdb_(rtdb) {}
 
 std::vector<DevicePollTask::RegisterGroup>
@@ -201,7 +209,7 @@ common::VoidResult DevicePollTask::poll_once() {
       all_ok = false;
       OPENEMS_LOG_W("PollTask",
           "Poll group failed for device " + device_->id() +
-          " (" + client_->config().ip + ":" + std::to_string(client_->config().port) + ")" +
+          " (" + client_->connection_info() + ")" +
           " FC=" + std::to_string(group.function_code) +
           " addr=" + std::to_string(group.start_address) +
           ": " + result.error_msg());

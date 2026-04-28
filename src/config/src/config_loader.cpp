@@ -34,7 +34,7 @@ static const std::vector<std::string> kRuntimeTables = {
 static const std::map<std::string, std::vector<std::string>> kTableHeaders = {
     {"ems_config", {"log_level", "default_poll_interval_ms", "site_id"}},
     {"site", {"id", "name", "description"}},
-    {"device", {"id", "site_id", "name", "type", "protocol", "ip", "port", "unit_id", "poll_interval_ms", "common_address"}},
+    {"device", {"id", "site_id", "name", "type", "protocol", "ip", "port", "unit_id", "poll_interval_ms", "common_address", "serial_port", "baud_rate", "parity", "data_bits", "stop_bits"}},
     {"telemetry", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
     {"teleindication", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
     {"telecontrol", {"id", "device_id", "name", "code", "data_type", "unit", "writable"}},
@@ -166,7 +166,7 @@ static common::Result<TableMap> load_postgres_tables(const std::string& db_url) 
   std::vector<std::pair<std::string, std::string>> queries = {
       {"ems_config", "SELECT log_level, default_poll_interval_ms::text, site_id FROM ems_config ORDER BY singleton LIMIT 1"},
       {"site", "SELECT id, name, description FROM sites ORDER BY id"},
-      {"device", "SELECT id, site_id, name, type, protocol, ip, port::text, unit_id::text, poll_interval_ms::text, COALESCE(common_address::text, '') FROM devices ORDER BY id"},
+      {"device", "SELECT id, site_id, name, type, protocol, ip, port::text, unit_id::text, poll_interval_ms::text, COALESCE(common_address::text, ''), COALESCE(serial_port, ''), COALESCE(baud_rate::text, '9600'), COALESCE(parity, 'N'), COALESCE(data_bits::text, '8'), COALESCE(stop_bits::text, '1') FROM devices ORDER BY id"},
       {"telemetry", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'telemetry' ORDER BY id"},
       {"teleindication", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'teleindication' ORDER BY id"},
       {"telecontrol", "SELECT id, device_id, name, code, data_type, unit, CASE WHEN writable THEN 'true' ELSE 'false' END FROM points WHERE category = 'telecontrol' ORDER BY id"},
@@ -249,6 +249,11 @@ static common::Result<EmsConfig> build_config_from_tables(const TableMap& tables
   auto d_unit_idx = device_table.col_index("unit_id");
   auto d_poll_idx = device_table.col_index("poll_interval_ms");
   auto d_ca_idx = device_table.col_index("common_address");
+  auto d_sp_idx = device_table.col_index("serial_port");
+  auto d_br_idx = device_table.col_index("baud_rate");
+  auto d_par_idx = device_table.col_index("parity");
+  auto d_db_idx = device_table.col_index("data_bits");
+  auto d_sb_idx = device_table.col_index("stop_bits");
 
   auto device_rows = device_table.find_all("site_id", site_id);
   for (auto* drow : device_rows) {
@@ -262,6 +267,11 @@ static common::Result<EmsConfig> build_config_from_tables(const TableMap& tables
     dc.unit_id = csv_uint8(*drow, d_unit_idx.value_or(7), 1);
     dc.poll_interval_ms = static_cast<uint32_t>(csv_int(*drow, d_poll_idx.value_or(8), 1000));
     dc.iec104_common_address = csv_uint16(*drow, d_ca_idx.value_or(9), 1);
+    dc.serial_port = csv_string(*drow, d_sp_idx.value_or(10), "");
+    dc.baud_rate = static_cast<uint32_t>(csv_int(*drow, d_br_idx.value_or(11), 9600));
+    dc.parity = csv_string(*drow, d_par_idx.value_or(12), "N")[0];
+    dc.data_bits = csv_uint8(*drow, d_db_idx.value_or(13), 8);
+    dc.stop_bits = csv_uint8(*drow, d_sb_idx.value_or(14), 1);
     config.site.devices.push_back(std::move(dc));
   }
 

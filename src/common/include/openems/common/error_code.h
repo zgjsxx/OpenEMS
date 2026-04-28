@@ -27,6 +27,13 @@ enum class ErrorCode : uint32_t {
   SiteNotFound        = 17,
   DataQualityBad      = 18,
   NotSupported        = 19,
+  SerialPortError     = 20,
+  SerialPortOpenFailed = 21,
+  SerialPortConfigFailed = 22,
+  SerialPortWriteFailed = 23,
+  SerialPortReadFailed = 24,
+  ModbusRtuCrcError   = 25,
+  ModbusRtuFrameError = 26,
 };
 
 std::string error_code_to_string(ErrorCode code);

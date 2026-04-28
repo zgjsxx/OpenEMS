@@ -28,10 +28,19 @@ static std::string device_status_to_string(common::DeviceStatus s) {
 
 Device::Device(common::DeviceId id, std::string name, common::DeviceType type,
                std::string ip, uint16_t port, uint8_t unit_id,
-               uint32_t poll_interval_ms)
+               uint32_t poll_interval_ms,
+               std::string protocol,
+               std::string serial_port,
+               uint32_t baud_rate,
+               char parity,
+               uint8_t data_bits,
+               uint8_t stop_bits)
     : id_(std::move(id)), name_(std::move(name)), type_(type),
       ip_(std::move(ip)), port_(port), unit_id_(unit_id),
-      poll_interval_ms_(poll_interval_ms) {}
+      poll_interval_ms_(poll_interval_ms),
+      protocol_(std::move(protocol)), serial_port_(std::move(serial_port)),
+      baud_rate_(baud_rate), parity_(parity),
+      data_bits_(data_bits), stop_bits_(stop_bits) {}
 
 void Device::set_status(common::DeviceStatus status) {
   std::lock_guard lock(mutex_);
@@ -60,8 +69,14 @@ std::string Device::to_string() const {
   std::ostringstream oss;
   oss << "Device[" << id_ << "] " << name_
       << " type=" << device_type_to_string(type_)
-      << " " << ip_ << ":" << port_
-      << " unit=" << unit_id_
+      << " proto=" << protocol_;
+  if (protocol_ == "modbus-rtu" && !serial_port_.empty()) {
+    oss << " " << serial_port_ << ":" << baud_rate_
+        << "-" << data_bits_ << parity_ << stop_bits_;
+  } else {
+    oss << " " << ip_ << ":" << port_;
+  }
+  oss << " unit=" << unit_id_
       << " status=" << device_status_to_string(status_)
       << " poll=" << poll_interval_ms_ << "ms"
       << " points=" << points_.size();
