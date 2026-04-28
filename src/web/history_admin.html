@@ -5,6 +5,38 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenEMS History</title>
 <link rel="stylesheet" href="/assets/admin.css">
+<style>
+.chart-wrap { position: relative; }
+.chart-wrap canvas {
+  width: 100%;
+  height: 320px;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #161a22;
+}
+.tooltip {
+  position: absolute;
+  display: none;
+  background: var(--panel-alt);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 10;
+}
+.tooltip .tt-time { color: var(--muted); }
+.tooltip .tt-val { color: var(--accent); font-weight: 700; }
+.quick-range { display: flex; gap: 6px; margin-top: 10px; }
+.quick-range button { padding: 5px 10px; font-size: 12px; background: var(--panel-alt); border: 1px solid var(--border); color: var(--muted); border-radius: 10px; }
+.quick-range button:hover { border-color: var(--accent); color: var(--accent); }
+.pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.pagination button { padding: 5px 10px; font-size: 12px; }
+.pagination button:disabled { opacity: 0.4; }
+</style>
 </head>
 <body>
 <div class="app-shell">
@@ -42,12 +74,33 @@
             <div><label for="end-input">结束时间</label><input id="end-input" type="datetime-local"></div>
             <div><label>&nbsp;</label><button id="query-btn">查询</button></div>
           </div>
+          <div class="quick-range">
+            <button onclick="setRange(10)">10 min</button>
+            <button onclick="setRange(30)">30 min</button>
+            <button onclick="setRange(60)">1 hour</button>
+            <button onclick="setRange(360)">6 hour</button>
+            <button onclick="setRange(720)">12 hour</button>
+            <button onclick="setRangeToday()">Today</button>
+          </div>
           <div id="status" class="status-line">加载点位中...</div>
         </div>
       </section>
 
       <section class="table-card">
-        <div class="table-card-header"><div class="section-title">结果</div></div>
+        <div class="table-card-header"><div class="section-title">趋势</div></div>
+        <div class="table-card-body">
+          <div class="chart-wrap">
+            <canvas id="chart" width="1100" height="320"></canvas>
+            <div class="tooltip" id="tooltip">
+              <div class="tt-time" id="tt-time"></div>
+              <div class="tt-val" id="tt-val"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="table-card">
+        <div class="table-card-header"><div class="section-title">数据表</div></div>
         <div class="table-card-body">
           <div class="table-wrap">
             <table>
@@ -55,6 +108,7 @@
               <tbody id="rows-body"><tr><td colspan="4" class="muted">暂无数据</td></tr></tbody>
             </table>
           </div>
+          <div class="pagination" id="pagination"></div>
         </div>
       </section>
     </main>
@@ -64,22 +118,238 @@
 <script>
 let points = [];
 let currentUnit = "";
+let allRows = [];
+let currentPage = 1;
+const PAGE_SIZE = 50;
+
+// chart state for hover
+let chartValidRows = [];
+let chartMinTs = 0, chartMaxTs = 0, chartMinVal = 0, chartMaxVal = 0;
+const PAD_L = 58, PAD_R = 20, PAD_T = 24, PAD_B = 36;
+const PLOT_W = 1100 - PAD_L - PAD_R;
+const PLOT_H = 320 - PAD_T - PAD_B;
 
 function pad2(v) { return String(v).padStart(2, "0"); }
+
 function toLocalInputValue(ts) {
   const d = new Date(ts);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
+
 function fromLocalInputValue(value) {
   const ts = new Date(value).getTime();
   return Number.isNaN(ts) ? null : ts;
 }
+
 function formatValue(value) {
   if (typeof value !== "number") return "-";
   if (Math.abs(value) >= 1000) return value.toFixed(1);
   if (Math.abs(value) >= 1) return value.toFixed(2);
   if (Math.abs(value) >= 0.01) return value.toFixed(3);
   return value.toFixed(4);
+}
+
+function formatTimeShort(ts) {
+  const d = new Date(ts);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function formatDateShort(ts) {
+  const d = new Date(ts);
+  return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
+}
+
+function formatTickLabel(ts, rangeMs) {
+  if (rangeMs >= 86400000) return formatDateShort(ts) + " " + formatTimeShort(ts);
+  return formatTimeShort(ts);
+}
+
+function pickTickInterval(rangeMs) {
+  const candidates = [60000, 300000, 600000, 1800000, 3600000, 7200000, 21600000, 86400000];
+  for (const iv of candidates) {
+    if (rangeMs / iv >= 4 && rangeMs / iv <= 10) return iv;
+  }
+  return 3600000;
+}
+
+function setRange(minutes) {
+  const end = Date.now();
+  const start = end - minutes * 60 * 1000;
+  document.getElementById("start-input").value = toLocalInputValue(start);
+  document.getElementById("end-input").value = toLocalInputValue(end);
+  queryHistory();
+}
+
+function setRangeToday() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  document.getElementById("start-input").value = toLocalInputValue(start);
+  document.getElementById("end-input").value = toLocalInputValue(now.getTime());
+  queryHistory();
+}
+
+// ---- Chart ----
+function drawChart(rows) {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#161a22";
+  ctx.fillRect(0, 0, w, h);
+
+  // Y grid
+  ctx.strokeStyle = "#2a2e36";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD_T + i * (PLOT_H / 4);
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y); ctx.stroke();
+  }
+
+  chartValidRows = rows.filter((r) => r.valid && typeof r.value === "number");
+  if (chartValidRows.length === 0) {
+    ctx.fillStyle = "#8a8f9a";
+    ctx.font = "13px sans-serif";
+    ctx.fillText("暂无历史数据", PAD_L + 4, PAD_T + 20);
+    chartMinTs = 0; chartMaxTs = 0;
+    return;
+  }
+
+  chartMinTs = chartValidRows[0].ts;
+  chartMaxTs = chartValidRows[chartValidRows.length - 1].ts;
+  let minVal = Math.min(...chartValidRows.map((r) => r.value));
+  let maxVal = Math.max(...chartValidRows.map((r) => r.value));
+  if (minVal === maxVal) { minVal -= 1; maxVal += 1; }
+  chartMinVal = minVal;
+  chartMaxVal = maxVal;
+
+  const xFor = (ts) => PAD_L + ((ts - chartMinTs) / Math.max(1, chartMaxTs - chartMinTs)) * PLOT_W;
+  const yFor = (value) => PAD_T + PLOT_H - ((value - minVal) / (maxVal - minVal)) * PLOT_H;
+
+  // Y labels
+  ctx.fillStyle = "#8a8f9a";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const val = maxVal - i * ((maxVal - minVal) / 4);
+    ctx.fillText(formatValue(val), PAD_L - 6, yFor(val) + 4);
+  }
+  ctx.textAlign = "left";
+
+  // X time ticks
+  const rangeMs = chartMaxTs - chartMinTs;
+  const tickIv = pickTickInterval(rangeMs);
+  const firstTick = Math.ceil(chartMinTs / tickIv) * tickIv;
+  ctx.font = "11px sans-serif";
+  for (let tickTs = firstTick; tickTs <= chartMaxTs; tickTs += tickIv) {
+    const x = xFor(tickTs);
+    ctx.fillStyle = "#8a8f9a";
+    ctx.fillText(formatTickLabel(tickTs, rangeMs), x, h - PAD_B + 16);
+    ctx.strokeStyle = "#2a2e3644";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + PLOT_H); ctx.stroke();
+  }
+
+  // Trend line
+  ctx.strokeStyle = "#4fc3f7";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  chartValidRows.forEach((row, i) => {
+    const x = xFor(row.ts), y = yFor(row.value);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Dots (skip when dense)
+  const dotSkip = chartValidRows.length > 200 ? Math.ceil(chartValidRows.length / 200) : 1;
+  ctx.fillStyle = "#4fc3f7";
+  chartValidRows.forEach((row, i) => {
+    if (i % dotSkip !== 0 && i !== chartValidRows.length - 1) return;
+    const x = xFor(row.ts), y = yFor(row.value);
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+// ---- Hover tooltip ----
+function xToTs(canvasX) {
+  if (chartMaxTs <= chartMinTs) return null;
+  const frac = (canvasX - PAD_L) / PLOT_W;
+  if (frac < 0 || frac > 1) return null;
+  return chartMinTs + frac * (chartMaxTs - chartMinTs);
+}
+
+function canvasCoords(e) {
+  const canvas = document.getElementById("chart");
+  const rect = canvas.getBoundingClientRect();
+  return { x: (e.clientX - rect.left) * (canvas.width / rect.width) };
+}
+
+document.addEventListener("mousemove", function(e) {
+  const tooltip = document.getElementById("tooltip");
+  if (!chartValidRows.length) { tooltip.style.display = "none"; return; }
+  const { x } = canvasCoords(e);
+  const ts = xToTs(x);
+  if (ts === null) { tooltip.style.display = "none"; return; }
+
+  let nearest = chartValidRows[0];
+  for (const row of chartValidRows) {
+    if (Math.abs(row.ts - ts) < Math.abs(nearest.ts - ts)) nearest = row;
+  }
+
+  document.getElementById("tt-time").textContent = OpenEMSAdmin.formatDateTime(nearest.ts);
+  document.getElementById("tt-val").textContent = formatValue(nearest.value) + (currentUnit ? " " + currentUnit : "") + "  " + (nearest.quality || "");
+
+  const wrapRect = document.querySelector(".chart-wrap").getBoundingClientRect();
+  let left = e.clientX - wrapRect.left + 12;
+  let top = e.clientY - wrapRect.top - 10;
+  if (left + 160 > wrapRect.width) left = e.clientX - wrapRect.left - 160;
+  if (top < 0) top = 4;
+  tooltip.style.display = "block";
+  tooltip.style.left = left + "px";
+  tooltip.style.top = top + "px";
+});
+
+document.addEventListener("mouseleave", function(e) {
+  if (!e.target.closest || !e.target.closest(".chart-wrap")) {
+    document.getElementById("tooltip").style.display = "none";
+  }
+});
+
+// ---- Table pagination ----
+function renderPage() {
+  const totalPages = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+
+  const startIdx = allRows.length - (currentPage * PAGE_SIZE);
+  const endIdx = allRows.length - ((currentPage - 1) * PAGE_SIZE);
+  const pageRows = allRows.slice(Math.max(0, startIdx), Math.min(allRows.length, endIdx));
+
+  const body = document.getElementById("rows-body");
+  if (!allRows.length) {
+    body.innerHTML = '<tr><td colspan="4" class="muted">暂无数据</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
+
+  body.innerHTML = pageRows.reverse().map((row) =>
+    `<tr>
+      <td>${OpenEMSAdmin.formatDateTime(row.ts)}</td>
+      <td>${formatValue(row.value)}${currentUnit ? " " + currentUnit : ""}</td>
+      <td>${OpenEMSAdmin.qualityPill(row.quality || "Unknown")}</td>
+      <td>${row.valid ? "true" : "false"}</td>
+    </tr>`
+  ).join("");
+
+  document.getElementById("pagination").innerHTML = `
+    <button ${currentPage <= 1 ? "disabled" : ""} onclick="goPage(${currentPage - 1})">上一页</button>
+    <span>第 ${currentPage} / ${totalPages} 页 (共 ${allRows.length} 条)</span>
+    <button ${currentPage >= totalPages ? "disabled" : ""} onclick="goPage(${currentPage + 1})">下一页</button>
+  `;
+}
+
+function goPage(p) {
+  currentPage = p;
+  renderPage();
 }
 
 async function loadPoints() {
@@ -101,18 +371,13 @@ async function queryHistory() {
   const point = points.find((item) => item.id === pointId);
   currentUnit = point ? point.unit || "" : "";
   document.getElementById("status").textContent = "查询中...";
+  currentPage = 1;
   const url = `/api/history/query?point_id=${encodeURIComponent(pointId)}&start=${start}&end=${end}&limit=5000`;
   const data = await OpenEMSAdmin.api(url);
-  const rows = data.rows || [];
-  document.getElementById("status").textContent = `共加载 ${rows.length} 条`;
-  document.getElementById("rows-body").innerHTML = rows.length ? rows.slice().reverse().map((row) => `
-    <tr>
-      <td>${OpenEMSAdmin.formatDateTime(row.ts)}</td>
-      <td>${formatValue(row.value)}${currentUnit ? " " + currentUnit : ""}</td>
-      <td>${OpenEMSAdmin.qualityPill(row.quality || "Unknown")}</td>
-      <td>${row.valid ? "true" : "false"}</td>
-    </tr>
-  `).join("") : '<tr><td colspan="4" class="muted">暂无历史数据</td></tr>';
+  allRows = data.rows || [];
+  drawChart(allRows);
+  renderPage();
+  document.getElementById("status").textContent = `共加载 ${allRows.length} 条`;
 }
 
 async function boot() {

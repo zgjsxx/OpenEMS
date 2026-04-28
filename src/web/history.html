@@ -67,9 +67,25 @@
   }
   .controls {
     display: grid;
-    grid-template-columns: 280px 210px 210px 120px;
+    grid-template-columns: 280px 210px 210px auto;
     gap: 12px;
     align-items: end;
+  }
+  .quick-range {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .quick-range button {
+    padding: 5px 10px;
+    font-size: 12px;
+    background: #2c3040;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .quick-range button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   label {
     display: block;
@@ -104,7 +120,10 @@
     color: var(--text-muted);
     font-size: 13px;
   }
-  canvas {
+  .chart-wrap {
+    position: relative;
+  }
+  .chart-wrap canvas {
     width: 100%;
     height: 320px;
     display: block;
@@ -112,6 +131,21 @@
     border: 1px solid #2a2e36;
     border-radius: 6px;
   }
+  .tooltip {
+    position: absolute;
+    display: none;
+    background: #2c3040;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 10;
+  }
+  .tooltip .tt-time { color: var(--text-muted); }
+  .tooltip .tt-val { color: var(--accent); font-weight: 700; }
   table {
     width: 100%;
     border-collapse: collapse;
@@ -129,6 +163,21 @@
   .quality-Good { color: var(--good); }
   .quality-Bad, .quality-Invalid { color: var(--bad); }
   .muted { color: var(--text-muted); }
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .pagination button {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+  .pagination button:disabled {
+    opacity: 0.4;
+  }
 </style>
 </head>
 <body>
@@ -156,6 +205,14 @@
         </div>
         <button id="query-btn" onclick="queryHistory()">Query</button>
       </div>
+      <div class="quick-range">
+        <button onclick="setRange(10)">10 min</button>
+        <button onclick="setRange(30)">30 min</button>
+        <button onclick="setRange(60)">1 hour</button>
+        <button onclick="setRange(360)">6 hour</button>
+        <button onclick="setRange(720)">12 hour</button>
+        <button onclick="setRangeToday()">Today</button>
+      </div>
       <div class="status" id="status">Loading points...</div>
     </div>
   </section>
@@ -163,7 +220,13 @@
   <section class="panel">
     <div class="panel-header">Trend</div>
     <div class="panel-body">
-      <canvas id="chart" width="1100" height="320"></canvas>
+      <div class="chart-wrap">
+        <canvas id="chart" width="1100" height="320"></canvas>
+        <div class="tooltip" id="tooltip">
+          <div class="tt-time" id="tt-time"></div>
+          <div class="tt-val" id="tt-val"></div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -183,6 +246,7 @@
           <tr><td colspan="4" class="muted">暂无历史数据</td></tr>
         </tbody>
       </table>
+      <div class="pagination" id="pagination"></div>
     </div>
   </section>
 </main>
@@ -190,6 +254,16 @@
 <script>
 let points = [];
 let currentUnit = "";
+let allRows = [];
+let currentPage = 1;
+const PAGE_SIZE = 50;
+
+// ---- chart state for hover ----
+let chartValidRows = [];
+let chartMinTs = 0, chartMaxTs = 0, chartMinVal = 0, chartMaxVal = 0;
+const CHART_PAD_LEFT = 58, CHART_PAD_RIGHT = 20, CHART_PAD_TOP = 24, CHART_PAD_BOTTOM = 36;
+const CHART_PLOT_W = 1100 - CHART_PAD_LEFT - CHART_PAD_RIGHT;
+const CHART_PLOT_H = 320 - CHART_PAD_TOP - CHART_PAD_BOTTOM;
 
 function pad2(v) {
   return String(v).padStart(2, "0");
@@ -212,6 +286,16 @@ function formatDateTime(ts) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
+function formatTimeShort(ts) {
+  const d = new Date(ts);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function formatDateShort(ts) {
+  const d = new Date(ts);
+  return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
+}
+
 function formatValue(value) {
   if (typeof value !== "number") return "-";
   if (Math.abs(value) >= 1000) return value.toFixed(1);
@@ -225,6 +309,22 @@ function setDefaultRange() {
   const start = end - 3600 * 1000;
   document.getElementById("start-input").value = toLocalInputValue(start);
   document.getElementById("end-input").value = toLocalInputValue(end);
+}
+
+function setRange(minutes) {
+  const end = Date.now();
+  const start = end - minutes * 60 * 1000;
+  document.getElementById("start-input").value = toLocalInputValue(start);
+  document.getElementById("end-input").value = toLocalInputValue(end);
+  queryHistory();
+}
+
+function setRangeToday() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  document.getElementById("start-input").value = toLocalInputValue(start);
+  document.getElementById("end-input").value = toLocalInputValue(now.getTime());
+  queryHistory();
 }
 
 async function loadPoints() {
@@ -245,6 +345,26 @@ async function loadPoints() {
   }
 }
 
+// ---- X axis time tick helper ----
+function pickTickInterval(rangeMs) {
+  const candidates = [60000, 300000, 600000, 1800000, 3600000, 7200000, 21600000, 86400000];
+  // aim for ~5-8 ticks across the range
+  for (const iv of candidates) {
+    if (rangeMs / iv >= 4 && rangeMs / iv <= 10) return iv;
+  }
+  return 3600000; // fallback 1h
+}
+
+function formatTickLabel(ts, rangeMs) {
+  if (rangeMs >= 86400000) {
+    return formatDateShort(ts) + " " + formatTimeShort(ts);
+  }
+  if (rangeMs >= 3600000) {
+    return formatTimeShort(ts);
+  }
+  return formatTimeShort(ts);
+}
+
 function drawChart(rows) {
   const canvas = document.getElementById("chart");
   const ctx = canvas.getContext("2d");
@@ -254,43 +374,71 @@ function drawChart(rows) {
   ctx.fillStyle = "#161a22";
   ctx.fillRect(0, 0, w, h);
 
+  // Y axis grid lines
   ctx.strokeStyle = "#2a2e36";
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
-    const y = 24 + i * ((h - 48) / 4);
+    const y = CHART_PAD_TOP + i * (CHART_PLOT_H / 4);
     ctx.beginPath();
-    ctx.moveTo(48, y);
-    ctx.lineTo(w - 20, y);
+    ctx.moveTo(CHART_PAD_LEFT, y);
+    ctx.lineTo(w - CHART_PAD_RIGHT, y);
     ctx.stroke();
   }
 
-  const validRows = rows.filter((r) => r.valid && typeof r.value === "number");
-  if (validRows.length === 0) {
+  chartValidRows = rows.filter((r) => r.valid && typeof r.value === "number");
+  if (chartValidRows.length === 0) {
     ctx.fillStyle = "#8a8f9a";
-    ctx.fillText("暂无历史数据", 52, 48);
+    ctx.font = "13px sans-serif";
+    ctx.fillText("暂无历史数据", CHART_PAD_LEFT + 4, CHART_PAD_TOP + 20);
+    chartMinTs = 0; chartMaxTs = 0;
     return;
   }
 
-  const minTs = validRows[0].ts;
-  const maxTs = validRows[validRows.length - 1].ts;
-  let minVal = Math.min(...validRows.map((r) => r.value));
-  let maxVal = Math.max(...validRows.map((r) => r.value));
-  if (minVal === maxVal) {
-    minVal -= 1;
-    maxVal += 1;
+  chartMinTs = chartValidRows[0].ts;
+  chartMaxTs = chartValidRows[chartValidRows.length - 1].ts;
+  let minVal = Math.min(...chartValidRows.map((r) => r.value));
+  let maxVal = Math.max(...chartValidRows.map((r) => r.value));
+  if (minVal === maxVal) { minVal -= 1; maxVal += 1; }
+  chartMinVal = minVal;
+  chartMaxVal = maxVal;
+
+  const xFor = (ts) => CHART_PAD_LEFT + ((ts - chartMinTs) / Math.max(1, chartMaxTs - chartMinTs)) * CHART_PLOT_W;
+  const yFor = (value) => CHART_PAD_TOP + CHART_PLOT_H - ((value - minVal) / (maxVal - minVal)) * CHART_PLOT_H;
+
+  // Y axis labels
+  ctx.fillStyle = "#8a8f9a";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const val = maxVal - i * ((maxVal - minVal) / 4);
+    const y = yFor(val);
+    ctx.fillText(formatValue(val), CHART_PAD_LEFT - 6, y + 4);
+  }
+  ctx.textAlign = "left";
+
+  // X axis time ticks
+  const rangeMs = chartMaxTs - chartMinTs;
+  const tickIv = pickTickInterval(rangeMs);
+  ctx.fillStyle = "#8a8f9a";
+  ctx.font = "11px sans-serif";
+  const firstTick = Math.ceil(chartMinTs / tickIv) * tickIv;
+  for (let tickTs = firstTick; tickTs <= chartMaxTs; tickTs += tickIv) {
+    const x = xFor(tickTs);
+    ctx.fillText(formatTickLabel(tickTs, rangeMs), x, h - CHART_PAD_BOTTOM + 16);
+    // vertical dashed tick line
+    ctx.strokeStyle = "#2a2e3644";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, CHART_PAD_TOP);
+    ctx.lineTo(x, CHART_PAD_TOP + CHART_PLOT_H);
+    ctx.stroke();
   }
 
-  const xFor = (ts) => 48 + ((ts - minTs) / Math.max(1, maxTs - minTs)) * (w - 68);
-  const yFor = (value) => h - 24 - ((value - minVal) / (maxVal - minVal)) * (h - 48);
-
-  ctx.fillStyle = "#8a8f9a";
-  ctx.fillText(`${formatValue(maxVal)} ${currentUnit}`, 8, 30);
-  ctx.fillText(`${formatValue(minVal)} ${currentUnit}`, 8, h - 24);
-
+  // Trend line
   ctx.strokeStyle = "#4fc3f7";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  validRows.forEach((row, index) => {
+  chartValidRows.forEach((row, index) => {
     const x = xFor(row.ts);
     const y = yFor(row.value);
     if (index === 0) ctx.moveTo(x, y);
@@ -298,8 +446,11 @@ function drawChart(rows) {
   });
   ctx.stroke();
 
+  // Data dots (skip when too dense)
+  const dotSkip = chartValidRows.length > 200 ? Math.ceil(chartValidRows.length / 200) : 1;
   ctx.fillStyle = "#4fc3f7";
-  validRows.forEach((row) => {
+  chartValidRows.forEach((row, i) => {
+    if (i % dotSkip !== 0 && i !== chartValidRows.length - 1) return;
     const x = xFor(row.ts);
     const y = yFor(row.value);
     ctx.beginPath();
@@ -308,13 +459,79 @@ function drawChart(rows) {
   });
 }
 
-function renderRows(rows) {
+// ---- Hover tooltip ----
+function xToTs(canvasX) {
+  if (chartMaxTs <= chartMinTs) return null;
+  const frac = (canvasX - CHART_PAD_LEFT) / CHART_PLOT_W;
+  if (frac < 0 || frac > 1) return null;
+  return chartMinTs + frac * (chartMaxTs - chartMinTs);
+}
+
+function canvasCoords(e) {
+  const canvas = document.getElementById("chart");
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY
+  };
+}
+
+document.addEventListener("mousemove", function(e) {
+  const tooltip = document.getElementById("tooltip");
+  if (!chartValidRows.length) { tooltip.style.display = "none"; return; }
+
+  const { x } = canvasCoords(e);
+  const ts = xToTs(x);
+  if (ts === null) { tooltip.style.display = "none"; return; }
+
+  // find nearest valid row
+  let nearest = chartValidRows[0];
+  for (const row of chartValidRows) {
+    if (Math.abs(row.ts - ts) < Math.abs(nearest.ts - ts)) nearest = row;
+  }
+
+  document.getElementById("tt-time").textContent = formatDateTime(nearest.ts);
+  document.getElementById("tt-val").textContent = formatValue(nearest.value) + (currentUnit ? " " + currentUnit : "") + "  " + (nearest.quality || "");
+
+  const wrapRect = document.querySelector(".chart-wrap").getBoundingClientRect();
+  const canvasRect = document.getElementById("chart").getBoundingClientRect();
+  // position tooltip near cursor, in CSS pixels relative to .chart-wrap
+  let left = e.clientX - wrapRect.left + 12;
+  let top = e.clientY - wrapRect.top - 10;
+  // keep inside chart-wrap
+  if (left + 160 > wrapRect.width) left = e.clientX - wrapRect.left - 160;
+  if (top < 0) top = 4;
+
+  tooltip.style.display = "block";
+  tooltip.style.left = left + "px";
+  tooltip.style.top = top + "px";
+});
+
+document.addEventListener("mouseleave", function(e) {
+  if (!e.target.closest || !e.target.closest(".chart-wrap")) {
+    document.getElementById("tooltip").style.display = "none";
+  }
+});
+
+// ---- Table pagination ----
+function renderPage() {
+  const totalPages = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  if (currentPage < 1) currentPage = 1;
+
+  const startIdx = allRows.length - (currentPage * PAGE_SIZE); // rows are ascending, show newest first
+  const endIdx = allRows.length - ((currentPage - 1) * PAGE_SIZE);
+  const pageRows = allRows.slice(Math.max(0, startIdx), Math.min(allRows.length, endIdx));
+
   const body = document.getElementById("rows-body");
-  if (!rows.length) {
+  if (!allRows.length) {
     body.innerHTML = '<tr><td colspan="4" class="muted">暂无历史数据</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
     return;
   }
-  body.innerHTML = rows.slice().reverse().map((row) => {
+  body.innerHTML = pageRows.reverse().map((row) => {
     const value = `${formatValue(row.value)}${currentUnit ? " " + currentUnit : ""}`;
     const quality = row.quality || "Unknown";
     return `<tr>
@@ -324,6 +541,18 @@ function renderRows(rows) {
       <td>${row.valid ? "true" : "false"}</td>
     </tr>`;
   }).join("");
+
+  const pag = document.getElementById("pagination");
+  pag.innerHTML = `
+    <button ${currentPage <= 1 ? "disabled" : ""} onclick="goPage(${currentPage - 1})">Prev</button>
+    <span>${currentPage} / ${totalPages}  (total ${allRows.length} rows)</span>
+    <button ${currentPage >= totalPages ? "disabled" : ""} onclick="goPage(${currentPage + 1})">Next</button>
+  `;
+}
+
+function goPage(p) {
+  currentPage = p;
+  renderPage();
 }
 
 async function queryHistory() {
@@ -338,14 +567,15 @@ async function queryHistory() {
   currentUnit = point ? point.unit || "" : "";
   btn.disabled = true;
   status.textContent = "Querying...";
+  currentPage = 1;
   try {
     const url = `/api/history/query?point_id=${encodeURIComponent(pointId)}&start=${start}&end=${end}&limit=5000`;
     const resp = await fetch(url);
     const data = await resp.json();
-    const rows = data.rows || [];
-    drawChart(rows);
-    renderRows(rows);
-    status.textContent = `Loaded ${rows.length} rows.`;
+    allRows = data.rows || [];
+    drawChart(allRows);
+    renderPage();
+    status.textContent = `Loaded ${allRows.length} rows.`;
   } catch (e) {
     status.textContent = "Query failed: " + e.message;
   } finally {
