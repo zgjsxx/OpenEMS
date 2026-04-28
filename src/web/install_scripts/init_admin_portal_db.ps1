@@ -1,9 +1,16 @@
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptRoot
 
-$container = "postgres15"
 $dbUser = "postgres"
 $dbName = "openems_admin"
+
+# Auto-detect running PostgreSQL/TimescaleDB container
+$container = (docker ps --format "{{.Names}}" | Where-Object { $_ -match "postgres" }) | Select-Object -First 1
+if (-not $container) {
+    Write-Error "No running PostgreSQL container found. Start one first."
+    exit 1
+}
+$container = $container.Trim()
 
 Write-Host "Creating database '$dbName' in container '$container'..."
 

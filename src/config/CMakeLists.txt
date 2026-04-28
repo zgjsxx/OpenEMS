@@ -12,6 +12,6 @@ target_link_libraries(openems_config PUBLIC
   openems_common
   openems_model
   openems_utils
+  openems_libpq
   nlohmann_json
-  ${CMAKE_DL_LIBS}
 )

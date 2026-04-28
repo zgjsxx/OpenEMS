@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -174,6 +175,89 @@ def _active_alarm_file_payload() -> Dict[str, Any]:
         return {"generated_at": data.get("generated_at", 0), "count": len(alarms), "alarms": alarms}
     except Exception as exc:
         return {"generated_at": 0, "count": 0, "alarms": [], "error": "Failed to read active alarm file: " + str(exc)}
+
+_ingest_logger = logging.getLogger("openems.ingestion")
+
+def _parse_jsonl_lines(lines: List[str], point_id: str = "", start_ms: int = 0, end_ms: int = 0) -> List[Dict[str, Any]]:
+    """Parse JSONL lines, optionally filtering by point_id and time range."""
+    records: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if point_id and record.get("point_id") != point_id:
+            continue
+        ts = int(record.get("ts") or 0)
+        if start_ms and ts < start_ms:
+            continue
+        if end_ms and ts > end_ms:
+            continue
+        records.append(record)
+    return records
+
+async def _catchup_loop() -> None:
+    """Background task that catch-up ingests JSONL files when DB becomes available."""
+    _ingest_logger.info("Catch-up loop started (60s cycle)")
+    while True:
+        await asyncio.sleep(60)
+        if not _db_ready():
+            continue
+        try:
+            await _catchup_scan()
+        except Exception as exc:
+            _ingest_logger.warning("Catch-up scan failed: %s", exc)
+
+async def _catchup_scan() -> None:
+    """Scan HISTORY_DIR for JSONL files not yet in TimescaleDB and ingest them."""
+    if not HISTORY_DIR.exists():
+        return
+    try:
+        progress = await asyncio.to_thread(_db.get_ingested_files)
+    except Exception as exc:
+        _ingest_logger.warning("Failed to read ingestion progress: %s", exc)
+        return
+
+    for path in sorted(HISTORY_DIR.glob("*.jsonl")):
+        filename = path.name
+        file_size = path.stat().st_size
+
+        prev = progress.get(filename)
+        # Skip fully ingested files (same size)
+        if prev and prev.get("file_size") == file_size:
+            continue
+
+        # Full read of historical or new file
+        try:
+            text = await asyncio.to_thread(path.read_text, "utf-8")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        records = _parse_jsonl_lines(lines)
+        if not records:
+            await asyncio.to_thread(
+                _db.mark_ingestion_progress, filename, file_size, 0, 0
+            )
+            continue
+
+        BATCH_SIZE = 5000
+        total = 0
+        for i in range(0, len(records), BATCH_SIZE):
+            batch = records[i : i + BATCH_SIZE]
+            try:
+                await asyncio.to_thread(_db.insert_history_batch, batch)
+                total += len(batch)
+            except Exception as exc:
+                _ingest_logger.error("Catch-up batch insert failed for %s: %s", filename, exc)
+                break
+
+        await asyncio.to_thread(
+            _db.mark_ingestion_progress, filename, file_size, len(lines), file_size
+        )
+        _ingest_logger.info("Catch-up ingested %d records from %s", total, filename)
 
 
 def _point_lookup() -> Dict[str, Dict[str, Any]]:
@@ -464,6 +548,7 @@ async def startup():
     _reader.attach()
     global _db_state
     _db_state = _db.initialize()
+    asyncio.create_task(_catchup_loop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -707,6 +792,17 @@ async def api_history_query(request: Request, point_id: str, start: Optional[int
         start_ms, end_ms = end_ms, start_ms
 
     limit = max(1, min(limit, 20000))
+
+    # Try TimescaleDB first
+    if _db_ready():
+        try:
+            rows = await asyncio.to_thread(_db.query_history, point_id, start_ms, end_ms, limit)
+            if rows:
+                return JSONResponse({"point_id": point_id, "count": len(rows), "rows": rows, "source": "timescaledb"})
+        except Exception:
+            pass  # fall through to JSONL
+
+    # Fallback: scan JSONL files
     rows: List[Dict[str, Any]] = []
     for path in _history_day_files(start_ms, end_ms):
         if not path.exists():
@@ -734,6 +830,44 @@ async def api_history_query(request: Request, point_id: str, start: Optional[int
         if len(rows) >= limit:
             break
     return JSONResponse({"point_id": point_id, "count": len(rows), "rows": rows})
+
+
+@app.get("/api/history/query_multi")
+async def api_history_query_multi(request: Request, point_ids: str, start: Optional[int] = None, end: Optional[int] = None, limit: int = 5000):
+    _session_user(request, "viewer")
+    _require_db()
+    ids = [pid.strip() for pid in point_ids.split(",") if pid.strip()]
+    if not ids:
+        return _json_error("point_ids is required.", 400)
+    if len(ids) > 8:
+        return _json_error("Maximum 8 point_ids allowed.", 400)
+
+    now = int(time.time() * 1000)
+    end_ms = end if end is not None else now
+    start_ms = start if start is not None else end_ms - 3600 * 1000
+    if start_ms > end_ms:
+        start_ms, end_ms = end_ms, start_ms
+    limit = max(1, min(limit, 20000))
+
+    series = await asyncio.to_thread(_db.query_history_multi, ids, start_ms, end_ms, limit)
+    return JSONResponse({"point_ids": ids, "series": series, "source": "timescaledb"})
+
+
+@app.get("/api/history/query_aggregate")
+async def api_history_query_aggregate(request: Request, point_id: str, interval: str = "1h", start: Optional[int] = None, end: Optional[int] = None):
+    _session_user(request, "viewer")
+    _require_db()
+    if interval not in ("1h", "1d", "1w", "1mo"):
+        return _json_error("interval must be one of: 1h, 1d, 1w, 1mo.", 400)
+
+    now = int(time.time() * 1000)
+    end_ms = end if end is not None else now
+    start_ms = start if start is not None else end_ms - 3600 * 1000
+    if start_ms > end_ms:
+        start_ms, end_ms = end_ms, start_ms
+
+    result = await asyncio.to_thread(_db.query_history_aggregate, point_id, start_ms, end_ms, interval)
+    return JSONResponse({**result, "source": "timescaledb"})
 
 
 @app.get("/api/config")

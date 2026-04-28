@@ -7,6 +7,7 @@ import json
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -786,3 +787,268 @@ class Database:
         for row in rows:
             row["created_at"] = _to_iso(row.get("created_at"))
         return rows
+
+    # ── History / TimescaleDB ───────────────────────────────────────
+
+    def insert_history_batch(self, records: List[Dict[str, Any]]) -> int:
+        """Bulk-insert history samples. Returns number of rows inserted."""
+        if not records:
+            return 0
+        with self.connect(autocommit=False) as conn:
+            try:
+                with conn.cursor() as cursor:
+                    if self.driver_name == "psycopg":
+                        # psycopg supports COPY which is much faster
+                        buf = StringIO()
+                        for rec in records:
+                            ts_iso = datetime.fromtimestamp(
+                                rec["ts"] / 1000, tz=timezone.utc
+                            ).strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+                            buf.write(
+                                f"{ts_iso}\t{rec.get('site_id', '')}\t{rec['point_id']}\t"
+                                f"{rec.get('device_id', '')}\t{rec.get('category', '')}\t"
+                                f"{rec.get('value', 0)}\t{rec.get('unit', '')}\t"
+                                f"{rec.get('quality', 'Unknown')}\t"
+                                f"{'t' if rec.get('valid', False) else 'f'}\n"
+                            )
+                        buf.seek(0)
+                        cursor.copy_from(
+                            buf, "history_samples",
+                            columns=(
+                                "ts", "site_id", "point_id", "device_id",
+                                "category", "value", "unit", "quality", "valid",
+                            ),
+                        )
+                    else:
+                        # psycopg2: use multi-row INSERT
+                        values_sql = ", ".join(
+                            f"(%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                            for _ in records
+                        )
+                        params = []
+                        for rec in records:
+                            params.extend([
+                                datetime.fromtimestamp(
+                                    rec["ts"] / 1000, tz=timezone.utc
+                                ),
+                                rec.get("site_id", ""),
+                                rec["point_id"],
+                                rec.get("device_id", ""),
+                                rec.get("category", ""),
+                                rec.get("value", 0),
+                                rec.get("unit", ""),
+                                rec.get("quality", "Unknown"),
+                                rec.get("valid", False),
+                            ])
+                        cursor.execute(
+                            f"""
+                            INSERT INTO history_samples(
+                                ts, site_id, point_id, device_id, category,
+                                value, unit, quality, valid
+                            ) VALUES {values_sql}
+                            """,
+                            tuple(params),
+                        )
+                conn.commit()
+                return len(records)
+            except Exception:
+                conn.rollback()
+                raise
+
+    def query_history(
+        self,
+        point_id: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int = 5000,
+    ) -> List[Dict[str, Any]]:
+        """Query history_samples from TimescaleDB. Returns list of {ts, value, quality, valid}."""
+        start_ts = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+        end_ts = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+        rows = self.fetch_all(
+            """
+            SELECT ts, value, quality, valid
+            FROM history_samples
+            WHERE point_id = %s
+              AND ts >= %s
+              AND ts <= %s
+            ORDER BY ts ASC
+            LIMIT %s
+            """,
+            (point_id, start_ts, end_ts, max(1, min(limit, 20000))),
+        )
+        result = []
+        for row in rows:
+            ts_val = row.get("ts")
+            if isinstance(ts_val, datetime):
+                if ts_val.tzinfo is None:
+                    ts_val = ts_val.replace(tzinfo=timezone.utc)
+                ts_ms = int(ts_val.timestamp() * 1000)
+            else:
+                ts_ms = int(ts_val) if ts_val else 0
+            result.append({
+                "ts": ts_ms,
+                "value": row.get("value"),
+                "quality": row.get("quality", "Unknown"),
+                "valid": bool(row.get("valid", False)),
+            })
+        return result
+
+    def mark_ingestion_progress(
+        self,
+        filename: str,
+        file_size: int,
+        line_count: int,
+        byte_offset: int = 0,
+    ) -> None:
+        """UPSERT ingestion progress for a JSONL file."""
+        self.execute(
+            """
+            INSERT INTO history_ingestion_progress(
+                filename, file_size, line_count, byte_offset, ingested_at
+            ) VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (filename)
+            DO UPDATE SET
+                file_size = EXCLUDED.file_size,
+                line_count = EXCLUDED.line_count,
+                byte_offset = EXCLUDED.byte_offset,
+                ingested_at = NOW()
+            """,
+            (filename, file_size, line_count, byte_offset),
+        )
+
+    def query_history_multi(
+        self,
+        point_ids: List[str],
+        start_ms: int,
+        end_ms: int,
+        limit: int = 5000,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Query multiple point_ids from history_samples, grouped by point_id.
+
+        Returns dict of point_id -> {point_id, unit, category, count, rows}.
+        Each point_id gets up to `limit` rows independently.
+        """
+        if not point_ids:
+            return {}
+        start_ts = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+        end_ts = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+        per_point_limit = max(1, min(limit, 20000))
+        series: Dict[str, Dict[str, Any]] = {}
+        for point_id in point_ids:
+            rows = self.fetch_all(
+                """
+                SELECT ts, point_id, unit, category, value, quality, valid
+                FROM history_samples
+                WHERE point_id = %s
+                  AND ts >= %s
+                  AND ts <= %s
+                ORDER BY ts ASC
+                LIMIT %s
+                """,
+                (point_id, start_ts, end_ts, per_point_limit),
+            )
+            pid_entries: List[Dict[str, Any]] = []
+            unit = ""
+            category = ""
+            for row in rows:
+                pid = row.get("point_id", "")
+                if not unit:
+                    unit = row.get("unit", "")
+                if not category:
+                    category = row.get("category", "")
+                ts_val = row.get("ts")
+                if isinstance(ts_val, datetime):
+                    if ts_val.tzinfo is None:
+                        ts_val = ts_val.replace(tzinfo=timezone.utc)
+                    ts_ms = int(ts_val.timestamp() * 1000)
+                else:
+                    ts_ms = int(ts_val) if ts_val else 0
+                pid_entries.append({
+                    "ts": ts_ms,
+                    "value": row.get("value"),
+                    "quality": row.get("quality", "Unknown"),
+                    "valid": bool(row.get("valid", False)),
+                })
+            if pid_entries:
+                series[pid] = {
+                    "point_id": pid,
+                    "unit": unit,
+                    "category": category,
+                    "count": len(pid_entries),
+                    "rows": pid_entries,
+                }
+        return series
+
+    def query_history_aggregate(
+        self,
+        point_id: str,
+        start_ms: int,
+        end_ms: int,
+        interval: str = "1h",
+    ) -> Dict[str, Any]:
+        """Aggregate history_samples using TimescaleDB time_bucket.
+
+        interval: one of '1h', '1d', '1w', '1mo'.
+        Returns {point_id, unit, interval, count, buckets}.
+        """
+        bucket_map = {
+            "1h": "1 hour",
+            "1d": "1 day",
+            "1w": "1 week",
+            "1mo": "1 month",
+        }
+        bucket_str = bucket_map.get(interval, "1 hour")
+        start_ts = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+        end_ts = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc)
+        rows = self.fetch_all(
+            """
+            SELECT time_bucket(%s, ts) AS bucket_start,
+                   AVG(value) AS avg_val, MIN(value) AS min_val, MAX(value) AS max_val,
+                   COUNT(*) AS sample_count,
+                   COUNT(*) FILTER (WHERE quality = 'Good') AS good_count,
+                   unit
+            FROM history_samples
+            WHERE point_id = %s AND ts >= %s AND ts <= %s AND valid = TRUE
+            GROUP BY bucket_start, unit
+            ORDER BY bucket_start ASC
+            """,
+            (bucket_str, point_id, start_ts, end_ts),
+        )
+        unit = ""
+        buckets = []
+        for row in rows:
+            if not unit:
+                unit = row.get("unit", "")
+            bs = row.get("bucket_start")
+            if isinstance(bs, datetime):
+                if bs.tzinfo is None:
+                    bs = bs.replace(tzinfo=timezone.utc)
+                bs_ms = int(bs.timestamp() * 1000)
+            else:
+                bs_ms = int(bs) if bs else 0
+            total = row.get("sample_count", 0) or 0
+            good = row.get("good_count", 0) or 0
+            pct = round(good / total * 100, 1) if total > 0 else 0.0
+            buckets.append({
+                "bucket_start": bs_ms,
+                "avg": row.get("avg_val"),
+                "min": row.get("min_val"),
+                "max": row.get("max_val"),
+                "count": total,
+                "quality_good_pct": pct,
+            })
+        return {
+            "point_id": point_id,
+            "unit": unit,
+            "interval": interval,
+            "count": len(buckets),
+            "buckets": buckets,
+        }
+
+    def get_ingested_files(self) -> Dict[str, Dict[str, Any]]:
+        """Return dict of filename -> {file_size, line_count, byte_offset} for all ingested files."""
+        rows = self.fetch_all(
+            "SELECT filename, file_size, line_count, byte_offset FROM history_ingestion_progress"
+        )
+        return {row["filename"]: row for row in rows}

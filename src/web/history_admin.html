@@ -29,13 +29,34 @@
   z-index: 10;
 }
 .tooltip .tt-time { color: var(--muted); }
-.tooltip .tt-val { color: var(--accent); font-weight: 700; }
+.tooltip .tt-val { font-weight: 700; }
+.tooltip .tt-row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+.tooltip .tt-dot { width: 8px; height: 8px; border-radius: 50%; }
 .quick-range { display: flex; gap: 6px; margin-top: 10px; }
 .quick-range button { padding: 5px 10px; font-size: 12px; background: var(--panel-alt); border: 1px solid var(--border); color: var(--muted); border-radius: 10px; }
 .quick-range button:hover { border-color: var(--accent); color: var(--accent); }
 .pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 13px; color: var(--muted); }
 .pagination button { padding: 5px 10px; font-size: 12px; }
 .pagination button:disabled { opacity: 0.4; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.filters .agg-row { display: flex; align-items: center; gap: 8px; }
+.filters .agg-row select { flex: 1; }
+.filters .agg-row label { margin-bottom: 0; white-space: nowrap; font-size: 13px; color: var(--muted); }
+.filters .btn-cell { display: flex; gap: 8px; align-items: flex-end; }
+.filters .btn-cell button { flex: 1; }
+.multi-panel { max-height: 200px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: rgba(17,23,34,0.7); }
+.multi-panel .mp-count { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.multi-panel .mp-cat { font-size: 12px; color: var(--muted); font-weight: 700; margin-top: 8px; margin-bottom: 4px; padding-bottom: 2px; border-bottom: 1px solid var(--border); }
+.multi-panel .mp-cat:first-of-type { margin-top: 0; }
+.multi-panel .mp-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; min-height: 30px; }
+.multi-panel .mp-item:hover { background: rgba(79,195,247,0.06); }
+.multi-panel .mp-item.checked { background: rgba(79,195,247,0.12); }
+.multi-panel .mp-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; opacity: 0.3; }
+.multi-panel .mp-item.checked .mp-dot { opacity: 1; }
+.multi-panel .mp-item input[type="checkbox"] { width: auto; margin: 0; padding: 0; border: none; background: none; flex-shrink: 0; accent-color: var(--accent); }
+.multi-panel .mp-item label { display: inline; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); cursor: pointer; margin-bottom: 0; }
+.multi-panel .mp-item.checked label { font-weight: 700; color: var(--accent); }
+.multi-panel .mp-unit { font-size: 11px; color: var(--muted); flex-shrink: 0; margin-left: 4px; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -61,18 +82,42 @@
     <header class="topbar">
       <div>
         <div class="page-title">历史查询</div>
-        <div class="page-subtitle">使用运行时 JSONL 历史文件查询单点趋势</div>
+        <div class="page-subtitle">单点趋势、多点对比、聚合统计与 CSV 导出</div>
       </div>
     </header>
     <main class="page-content">
       <section class="table-card">
-        <div class="table-card-header"><div><div class="section-title">查询条件</div><div class="section-subtitle">支持时间范围和点位切换</div></div></div>
+        <div class="table-card-header"><div><div class="section-title">查询条件</div><div class="section-subtitle">模式切换、时间范围与聚合选项</div></div></div>
         <div class="table-card-body">
           <div class="filters">
-            <div><label for="point-select">点位</label><select id="point-select"></select></div>
+            <div><label for="query-mode">模式</label><select id="query-mode">
+              <option value="single">单点趋势</option>
+              <option value="multi">多点对比</option>
+            </select></div>
+            <div id="single-ctrl">
+              <label for="point-select">点位</label><select id="point-select"></select>
+            </div>
+            <div id="agg-ctrl">
+              <label>聚合</label>
+              <div class="agg-row">
+                <label style="font-size:13px"><input type="checkbox" id="agg-toggle"> 开启</label>
+                <select id="agg-interval" disabled>
+                  <option value="1h">1 小时</option>
+                  <option value="1d">1 天</option>
+                  <option value="1w">1 周</option>
+                  <option value="1mo">1 月</option>
+                </select>
+              </div>
+            </div>
             <div><label for="start-input">开始时间</label><input id="start-input" type="datetime-local"></div>
             <div><label for="end-input">结束时间</label><input id="end-input" type="datetime-local"></div>
-            <div><label>&nbsp;</label><button id="query-btn">查询</button></div>
+            <div class="btn-cell"><label>&nbsp;</label><button id="query-btn">查询</button><button id="export-btn" class="secondary" disabled>导出CSV</button></div>
+          </div>
+          <div id="multi-ctrl" style="display:none; margin-bottom:14px">
+            <div class="multi-panel" id="multi-panel">
+              <div class="mp-count" id="mp-count">已选 0 个点位（最多8个）</div>
+              <div id="mp-list"></div>
+            </div>
           </div>
           <div class="quick-range">
             <button onclick="setRange(10)">10 min</button>
@@ -93,7 +138,7 @@
             <canvas id="chart" width="1100" height="320"></canvas>
             <div class="tooltip" id="tooltip">
               <div class="tt-time" id="tt-time"></div>
-              <div class="tt-val" id="tt-val"></div>
+              <div id="tt-values"></div>
             </div>
           </div>
         </div>
@@ -104,7 +149,7 @@
         <div class="table-card-body">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>时间</th><th>值</th><th>质量</th><th>有效</th></tr></thead>
+              <thead id="table-head"><tr><th>时间</th><th>值</th><th>质量</th><th>有效</th></tr></thead>
               <tbody id="rows-body"><tr><td colspan="4" class="muted">暂无数据</td></tr></tbody>
             </table>
           </div>
@@ -121,6 +166,17 @@ let currentUnit = "";
 let allRows = [];
 let currentPage = 1;
 const PAGE_SIZE = 50;
+
+// mode state
+let queryMode = "single";  // single | multi
+let multiSeries = {};       // point_id -> {rows, unit, category, ...}
+let selectedPointIds = [];
+let isAggregate = false;
+let aggBuckets = [];
+let aggInterval = "1h";
+
+// 8-color palette for multi-line
+const COLORS = ["#4fc3f7","#f06292","#81c784","#ffb74d","#ba68c8","#e57373","#4db6ac","#fff176"];
 
 // chart state for hover
 let chartValidRows = [];
@@ -172,12 +228,17 @@ function pickTickInterval(rangeMs) {
   return 3600000;
 }
 
+function formatBucketInterval(iv) {
+  const map = {"1h":"1小时","1d":"1天","1w":"1周","1mo":"1月"};
+  return map[iv] || iv;
+}
+
 function setRange(minutes) {
   const end = Date.now();
   const start = end - minutes * 60 * 1000;
   document.getElementById("start-input").value = toLocalInputValue(start);
   document.getElementById("end-input").value = toLocalInputValue(end);
-  queryHistory();
+  doQuery();
 }
 
 function setRangeToday() {
@@ -185,11 +246,80 @@ function setRangeToday() {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   document.getElementById("start-input").value = toLocalInputValue(start);
   document.getElementById("end-input").value = toLocalInputValue(now.getTime());
-  queryHistory();
+  doQuery();
 }
 
-// ---- Chart ----
+// ── Mode switching ──────────────────────────────────────────────
+function switchMode(mode) {
+  queryMode = mode;
+  const isSingle = mode === "single";
+  document.getElementById("single-ctrl").style.display = isSingle ? "" : "none";
+  document.getElementById("agg-ctrl").style.display = isSingle ? "" : "none";
+  document.getElementById("multi-ctrl").style.display = isSingle ? "none" : "block";
+  // clear current data
+  allRows = [];
+  multiSeries = {};
+  aggBuckets = [];
+  document.getElementById("export-btn").disabled = true;
+}
+
+function buildMultiPanel() {
+  const list = document.getElementById("mp-list");
+  // group by category
+  const groups = {};
+  for (const p of points) {
+    const cat = p.category || "other";
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(p);
+  }
+  const catLabels = {telemetry:"遥测",teleindication:"遥信",telecontrol:"遥控",teleadjust:"遥调",other:"其他"};
+  let html = "";
+  let ci = 0; // global color index
+  for (const [cat, pts] of Object.entries(groups)) {
+    html += `<div class="mp-cat">${catLabels[cat] || cat}</div>`;
+    for (const p of pts) {
+      const id = `mp-${p.id}`;
+      const color = COLORS[ci % COLORS.length];
+      ci++;
+      html += `<div class="mp-item" data-pid="${p.id}">
+        <span class="mp-dot" style="background:${color}"></span>
+        <input type="checkbox" id="${id}" value="${p.id}" onchange="updateMultiCount()">
+        <label for="${id}">${OpenEMSAdmin.escapeHtml(p.id)}</label>
+        <span class="mp-unit">${OpenEMSAdmin.escapeHtml(p.unit || "")}</span>
+      </div>`;
+    }
+  }
+  list.innerHTML = html;
+  updateMultiCount();
+}
+
+function updateMultiCount() {
+  selectedPointIds = [];
+  for (const cb of document.querySelectorAll("#mp-list input[type=checkbox]")) {
+    if (cb.checked) selectedPointIds.push(cb.value);
+  }
+  // update checked class on items
+  for (const item of document.querySelectorAll("#mp-list .mp-item")) {
+    item.classList.toggle("checked", selectedPointIds.includes(item.dataset.pid));
+  }
+  document.getElementById("mp-count").textContent = `已选 ${selectedPointIds.length} / 8 个点位`;
+}
+
+// ── Aggregate toggle ────────────────────────────────────────────
+document.getElementById("agg-toggle").addEventListener("change", function() {
+  isAggregate = this.checked;
+  document.getElementById("agg-interval").disabled = !this.checked;
+});
+
+document.getElementById("query-mode").addEventListener("change", function() {
+  switchMode(this.value);
+  if (this.value === "multi") buildMultiPanel();
+});
+
+// ── Chart drawing ───────────────────────────────────────────────
+
 function drawChart(rows) {
+  // single-point raw trend (same as original)
   const canvas = document.getElementById("chart");
   const ctx = canvas.getContext("2d");
   const w = canvas.width, h = canvas.height;
@@ -205,8 +335,8 @@ function drawChart(rows) {
     ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y); ctx.stroke();
   }
 
-  chartValidRows = rows.filter((r) => r.valid && typeof r.value === "number");
-  if (chartValidRows.length === 0) {
+  chartValidRows = rows.filter(r => r.valid && typeof r.value === "number");
+  if (!chartValidRows.length) {
     ctx.fillStyle = "#8a8f9a";
     ctx.font = "13px sans-serif";
     ctx.fillText("暂无历史数据", PAD_L + 4, PAD_T + 20);
@@ -216,19 +346,17 @@ function drawChart(rows) {
 
   chartMinTs = chartValidRows[0].ts;
   chartMaxTs = chartValidRows[chartValidRows.length - 1].ts;
-  let minVal = Math.min(...chartValidRows.map((r) => r.value));
-  let maxVal = Math.max(...chartValidRows.map((r) => r.value));
+  let minVal = Math.min(...chartValidRows.map(r => r.value));
+  let maxVal = Math.max(...chartValidRows.map(r => r.value));
   if (minVal === maxVal) { minVal -= 1; maxVal += 1; }
   chartMinVal = minVal;
   chartMaxVal = maxVal;
 
-  const xFor = (ts) => PAD_L + ((ts - chartMinTs) / Math.max(1, chartMaxTs - chartMinTs)) * PLOT_W;
-  const yFor = (value) => PAD_T + PLOT_H - ((value - minVal) / (maxVal - minVal)) * PLOT_H;
+  const xFor = ts => PAD_L + ((ts - chartMinTs) / Math.max(1, chartMaxTs - chartMinTs)) * PLOT_W;
+  const yFor = value => PAD_T + PLOT_H - ((value - minVal) / (maxVal - minVal)) * PLOT_H;
 
   // Y labels
-  ctx.fillStyle = "#8a8f9a";
-  ctx.font = "11px sans-serif";
-  ctx.textAlign = "right";
+  ctx.fillStyle = "#8a8f9a"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
   for (let i = 0; i <= 4; i++) {
     const val = maxVal - i * ((maxVal - minVal) / 4);
     ctx.fillText(formatValue(val), PAD_L - 6, yFor(val) + 4);
@@ -244,14 +372,12 @@ function drawChart(rows) {
     const x = xFor(tickTs);
     ctx.fillStyle = "#8a8f9a";
     ctx.fillText(formatTickLabel(tickTs, rangeMs), x, h - PAD_B + 16);
-    ctx.strokeStyle = "#2a2e3644";
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#2a2e3644"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + PLOT_H); ctx.stroke();
   }
 
   // Trend line
-  ctx.strokeStyle = "#4fc3f7";
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#4fc3f7"; ctx.lineWidth = 2;
   ctx.beginPath();
   chartValidRows.forEach((row, i) => {
     const x = xFor(row.ts), y = yFor(row.value);
@@ -259,7 +385,7 @@ function drawChart(rows) {
   });
   ctx.stroke();
 
-  // Dots (skip when dense)
+  // Dots
   const dotSkip = chartValidRows.length > 200 ? Math.ceil(chartValidRows.length / 200) : 1;
   ctx.fillStyle = "#4fc3f7";
   chartValidRows.forEach((row, i) => {
@@ -269,7 +395,226 @@ function drawChart(rows) {
   });
 }
 
-// ---- Hover tooltip ----
+function drawMultiChart(seriesDict) {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#161a22";
+  ctx.fillRect(0, 0, w, h);
+
+  const pids = Object.keys(seriesDict);
+  if (!pids.length) {
+    ctx.fillStyle = "#8a8f9a"; ctx.font = "13px sans-serif";
+    ctx.fillText("暂无数据", PAD_L + 4, PAD_T + 20);
+    chartMinTs = 0; chartMaxTs = 0; chartMinVal = 0; chartMaxVal = 0;
+    chartValidRows = [];
+    return;
+  }
+
+  // global time range across all series
+  let gMinTs = Infinity, gMaxTs = -Infinity;
+  for (const pid of pids) {
+    const rows = (seriesDict[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+    if (rows.length) {
+      gMinTs = Math.min(gMinTs, rows[0].ts);
+      gMaxTs = Math.max(gMaxTs, rows[rows.length - 1].ts);
+    }
+  }
+  if (gMinTs === Infinity) {
+    ctx.fillStyle = "#8a8f9a"; ctx.font = "13px sans-serif";
+    ctx.fillText("暂无历史数据", PAD_L + 4, PAD_T + 20);
+    chartMinTs = 0; chartMaxTs = 0;
+    chartValidRows = [];
+    return;
+  }
+  chartMinTs = gMinTs;
+  chartMaxTs = gMaxTs;
+
+  // global Y range across all series (shared axis)
+  let gMinVal = Infinity, gMaxVal = -Infinity;
+  for (const pid of pids) {
+    const rows = (seriesDict[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+    for (const r of rows) {
+      gMinVal = Math.min(gMinVal, r.value);
+      gMaxVal = Math.max(gMaxVal, r.value);
+    }
+  }
+  if (gMinVal === Infinity) { gMinVal = 0; gMaxVal = 100; }
+  if (gMinVal === gMaxVal) { gMinVal -= 1; gMaxVal += 1; }
+  chartMinVal = gMinVal;
+  chartMaxVal = gMaxVal;
+
+  const xFor = ts => PAD_L + ((ts - chartMinTs) / Math.max(1, chartMaxTs - chartMinTs)) * PLOT_W;
+  const yFor = v => PAD_T + PLOT_H - ((v - gMinVal) / (gMaxVal - gMinVal)) * PLOT_H;
+
+  // Y grid
+  ctx.strokeStyle = "#2a2e36"; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD_T + i * (PLOT_H / 4);
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y); ctx.stroke();
+  }
+
+  // Y labels: actual values
+  ctx.fillStyle = "#8a8f9a"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const val = gMaxVal - i * ((gMaxVal - gMinVal) / 4);
+    ctx.fillText(formatValue(val), PAD_L - 6, yFor(val) + 4);
+  }
+  ctx.textAlign = "left";
+
+  // X time ticks
+  const rangeMs = chartMaxTs - chartMinTs;
+  const tickIv = pickTickInterval(rangeMs);
+  const firstTick = Math.ceil(chartMinTs / tickIv) * tickIv;
+  ctx.font = "11px sans-serif";
+  for (let tickTs = firstTick; tickTs <= chartMaxTs; tickTs += tickIv) {
+    const x = xFor(tickTs);
+    ctx.fillStyle = "#8a8f9a";
+    ctx.fillText(formatTickLabel(tickTs, rangeMs), x, h - PAD_B + 16);
+    ctx.strokeStyle = "#2a2e3644"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + PLOT_H); ctx.stroke();
+  }
+
+  // Draw each series on the shared Y axis
+  chartValidRows = [];
+  for (let ci = 0; ci < pids.length; ci++) {
+    const pid = pids[ci];
+    const color = COLORS[ci % COLORS.length];
+    const rows = (seriesDict[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+    if (!rows.length) continue;
+
+    // line
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath();
+    rows.forEach((row, i) => {
+      const x = xFor(row.ts), y = yFor(row.value);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // dots
+    const dotSkip = rows.length > 200 ? Math.ceil(rows.length / 200) : 1;
+    ctx.fillStyle = color;
+    rows.forEach((row, i) => {
+      if (i % dotSkip !== 0 && i !== rows.length - 1) return;
+      ctx.beginPath(); ctx.arc(xFor(row.ts), yFor(row.value), 2.5, 0, Math.PI * 2); ctx.fill();
+    });
+
+    // store for tooltip
+    rows.forEach(r => {
+      chartValidRows.push({ts: r.ts, value: r.value, point_id: pid, color});
+    });
+  }
+
+  // Legend in top-right
+  const legendX = w - PAD_R - 4;
+  let legendY = PAD_T + 4;
+  ctx.font = "12px sans-serif"; ctx.textAlign = "right";
+  for (let ci = 0; ci < pids.length; ci++) {
+    const pid = pids[ci];
+    const color = COLORS[ci % COLORS.length];
+    const unit = seriesDict[pid].unit || "";
+    ctx.fillStyle = color;
+    ctx.fillRect(legendX - ctx.measureText(pid + (unit ? " ("+unit+")" : "")).width - 14, legendY, 10, 10);
+    ctx.fillStyle = "#ccc";
+    ctx.fillText(pid + (unit ? " ("+unit+")" : ""), legendX, legendY + 10);
+    legendY += 16;
+  }
+  ctx.textAlign = "left";
+}
+
+function drawAggregateChart(buckets, unit) {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#161a22";
+  ctx.fillRect(0, 0, w, h);
+
+  if (!buckets.length) {
+    ctx.fillStyle = "#8a8f9a"; ctx.font = "13px sans-serif";
+    ctx.fillText("暂无聚合数据", PAD_L + 4, PAD_T + 20);
+    chartMinTs = 0; chartMaxTs = 0;
+    chartValidRows = [];
+    return;
+  }
+
+  chartMinTs = buckets[0].bucket_start;
+  chartMaxTs = buckets[buckets.length - 1].bucket_start;
+  let minVal = Math.min(...buckets.map(b => b.min));
+  let maxVal = Math.max(...buckets.map(b => b.max));
+  if (minVal === maxVal) { minVal -= 1; maxVal += 1; }
+  chartMinVal = minVal;
+  chartMaxVal = maxVal;
+  chartValidRows = buckets.map(b => ({ts: b.bucket_start, value: b.avg, min: b.min, max: b.max, count: b.count, quality_good_pct: b.quality_good_pct}));
+
+  // Y grid
+  ctx.strokeStyle = "#2a2e36"; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = PAD_T + i * (PLOT_H / 4);
+    ctx.beginPath(); ctx.moveTo(PAD_L, y); ctx.lineTo(w - PAD_R, y); ctx.stroke();
+  }
+
+  const xFor = ts => PAD_L + ((ts - chartMinTs) / Math.max(1, chartMaxTs - chartMinTs)) * PLOT_W;
+  const yFor = v => PAD_T + PLOT_H - ((v - minVal) / (maxVal - minVal)) * PLOT_H;
+
+  // Y labels
+  ctx.fillStyle = "#8a8f9a"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const val = maxVal - i * ((maxVal - minVal) / 4);
+    ctx.fillText(formatValue(val), PAD_L - 6, yFor(val) + 4);
+  }
+  ctx.textAlign = "left";
+
+  // X time ticks
+  const rangeMs = chartMaxTs - chartMinTs;
+  const tickIv = pickTickInterval(rangeMs);
+  const firstTick = Math.ceil(chartMinTs / tickIv) * tickIv;
+  ctx.font = "11px sans-serif";
+  for (let tickTs = firstTick; tickTs <= chartMaxTs; tickTs += tickIv) {
+    const x = xFor(tickTs);
+    ctx.fillStyle = "#8a8f9a";
+    ctx.fillText(formatTickLabel(tickTs, rangeMs), x, h - PAD_B + 16);
+    ctx.strokeStyle = "#2a2e3644"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, PAD_T); ctx.lineTo(x, PAD_T + PLOT_H); ctx.stroke();
+  }
+
+  // min/max range band (semi-transparent)
+  ctx.fillStyle = "rgba(79,195,247,0.15)";
+  ctx.beginPath();
+  buckets.forEach((b, i) => {
+    const x = xFor(b.bucket_start);
+    const y = yFor(b.max);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  for (let i = buckets.length - 1; i >= 0; i--) {
+    const b = buckets[i];
+    const x = xFor(b.bucket_start);
+    const y = yFor(b.min);
+    ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // avg solid line
+  ctx.strokeStyle = "#4fc3f7"; ctx.lineWidth = 2;
+  ctx.beginPath();
+  buckets.forEach((b, i) => {
+    const x = xFor(b.bucket_start), y = yFor(b.avg);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // circle markers at each bucket
+  ctx.fillStyle = "#4fc3f7";
+  buckets.forEach(b => {
+    const x = xFor(b.bucket_start), y = yFor(b.avg);
+    ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+// ── Hover tooltip ───────────────────────────────────────────────
 function xToTs(canvasX) {
   if (chartMaxTs <= chartMinTs) return null;
   const frac = (canvasX - PAD_L) / PLOT_W;
@@ -290,18 +635,57 @@ document.addEventListener("mousemove", function(e) {
   const ts = xToTs(x);
   if (ts === null) { tooltip.style.display = "none"; return; }
 
-  let nearest = chartValidRows[0];
-  for (const row of chartValidRows) {
-    if (Math.abs(row.ts - ts) < Math.abs(nearest.ts - ts)) nearest = row;
+  // multi-point mode: show all series
+  if (queryMode === "multi") {
+    const pids = Object.keys(multiSeries);
+    const ttTime = document.getElementById("tt-time");
+    const ttValues = document.getElementById("tt-values");
+    // find nearest ts from any series
+    let nearestTs = Infinity;
+    for (const pid of pids) {
+      const rows = (multiSeries[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+      for (const row of rows) {
+        if (Math.abs(row.ts - ts) < Math.abs(nearestTs - ts)) nearestTs = row.ts;
+      }
+    }
+    if (nearestTs === Infinity) { tooltip.style.display = "none"; return; }
+    ttTime.textContent = OpenEMSAdmin.formatDateTime(nearestTs);
+    let html = "";
+    for (let ci = 0; ci < pids.length; ci++) {
+      const pid = pids[ci];
+      const color = COLORS[ci % COLORS.length];
+      const rows = (multiSeries[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+      const nearest = rows.reduce((best, r) => Math.abs(r.ts - nearestTs) < Math.abs(best.ts - nearestTs) ? r : best, rows[0]);
+      if (!nearest) continue;
+      const unit = multiSeries[pid].unit || "";
+      html += `<div class="tt-row"><span class="tt-dot" style="background:${color}"></span><span class="tt-val" style="color:${color}">${pid}: ${formatValue(nearest.value)} ${unit}</span></div>`;
+    }
+    ttValues.innerHTML = html;
+  } else if (isAggregate) {
+    const ttTime = document.getElementById("tt-time");
+    const ttValues = document.getElementById("tt-values");
+    let nearest = chartValidRows[0];
+    for (const b of chartValidRows) {
+      if (Math.abs(b.ts - ts) < Math.abs(nearest.ts - ts)) nearest = b;
+    }
+    ttTime.textContent = OpenEMSAdmin.formatDateTime(nearest.ts);
+    ttValues.innerHTML = `<div class="tt-row"><span class="tt-val" style="color:#4fc3f7">avg: ${formatValue(nearest.value)} ${currentUnit}</span></div>
+      <div class="tt-row">min: ${formatValue(nearest.min)} / max: ${formatValue(nearest.max)}</div>
+      <div class="tt-row">样本: ${nearest.count} | 质量: ${nearest.quality_good_pct}%</div>`;
+  } else {
+    // single-point raw
+    let nearest = chartValidRows[0];
+    for (const row of chartValidRows) {
+      if (Math.abs(row.ts - ts) < Math.abs(nearest.ts - ts)) nearest = row;
+    }
+    document.getElementById("tt-time").textContent = OpenEMSAdmin.formatDateTime(nearest.ts);
+    document.getElementById("tt-values").innerHTML = `<div class="tt-row"><span class="tt-val" style="color:#4fc3f7">${formatValue(nearest.value)}${currentUnit ? " "+currentUnit : ""}  ${nearest.quality || ""}</span></div>`;
   }
-
-  document.getElementById("tt-time").textContent = OpenEMSAdmin.formatDateTime(nearest.ts);
-  document.getElementById("tt-val").textContent = formatValue(nearest.value) + (currentUnit ? " " + currentUnit : "") + "  " + (nearest.quality || "");
 
   const wrapRect = document.querySelector(".chart-wrap").getBoundingClientRect();
   let left = e.clientX - wrapRect.left + 12;
   let top = e.clientY - wrapRect.top - 10;
-  if (left + 160 > wrapRect.width) left = e.clientX - wrapRect.left - 160;
+  if (left + 180 > wrapRect.width) left = e.clientX - wrapRect.left - 180;
   if (top < 0) top = 4;
   tooltip.style.display = "block";
   tooltip.style.left = left + "px";
@@ -314,8 +698,10 @@ document.addEventListener("mouseleave", function(e) {
   }
 });
 
-// ---- Table pagination ----
-function renderPage() {
+// ── Table rendering ─────────────────────────────────────────────
+function renderSingleTable() {
+  const head = document.getElementById("table-head");
+  head.innerHTML = "<tr><th>时间</th><th>值</th><th>质量</th><th>有效</th></tr>";
   const totalPages = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
   if (currentPage > totalPages) currentPage = totalPages;
   if (currentPage < 1) currentPage = 1;
@@ -331,7 +717,7 @@ function renderPage() {
     return;
   }
 
-  body.innerHTML = pageRows.reverse().map((row) =>
+  body.innerHTML = pageRows.reverse().map(row =>
     `<tr>
       <td>${OpenEMSAdmin.formatDateTime(row.ts)}</td>
       <td>${formatValue(row.value)}${currentUnit ? " " + currentUnit : ""}</td>
@@ -347,37 +733,228 @@ function renderPage() {
   `;
 }
 
-function goPage(p) {
-  currentPage = p;
-  renderPage();
+function renderAggregateTable() {
+  const head = document.getElementById("table-head");
+  head.innerHTML = `<tr><th>时间区间</th><th>平均值 (${currentUnit})</th><th>最小值</th><th>最大值</th><th>样本数</th><th>质量%</th></tr>`;
+  const body = document.getElementById("rows-body");
+  if (!aggBuckets.length) {
+    body.innerHTML = '<tr><td colspan="6" class="muted">暂无聚合数据</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
+  // reverse chronological
+  body.innerHTML = aggBuckets.slice().reverse().map(b =>
+    `<tr>
+      <td>${OpenEMSAdmin.formatDateTime(b.bucket_start)}</td>
+      <td>${formatValue(b.avg)}</td>
+      <td>${formatValue(b.min)}</td>
+      <td>${formatValue(b.max)}</td>
+      <td>${b.count}</td>
+      <td>${b.quality_good_pct}%</td>
+    </tr>`
+  ).join("");
+  document.getElementById("pagination").innerHTML = "";
 }
 
+function renderMultiTable() {
+  const pids = Object.keys(multiSeries);
+  if (!pids.length) {
+    document.getElementById("table-head").innerHTML = "<tr><th>时间</th><th>值</th><th>质量</th><th>有效</th></tr>";
+    document.getElementById("rows-body").innerHTML = '<tr><td colspan="4" class="muted">暂无数据</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
+
+  // merge all series rows into a wide table sorted by timestamp
+  // build a time-aligned wide table
+  const tsMap = new Map(); // ts -> {point_id: value}
+  let unitCols = [];
+  for (let ci = 0; ci < pids.length; ci++) {
+    const pid = pids[ci];
+    const unit = multiSeries[pid].unit || "";
+    unitCols.push(`${pid} (${unit})`);
+    const rows = (multiSeries[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+    for (const r of rows) {
+      if (!tsMap.has(r.ts)) tsMap.set(r.ts, {});
+      tsMap.get(r.ts)[pid] = r.value;
+    }
+  }
+
+  const sortedTs = [...tsMap.keys()].sort((a, b) => a - b);
+
+  const head = document.getElementById("table-head");
+  let headHtml = "<tr><th>时间</th>";
+  for (const col of unitCols) headHtml += `<th>${OpenEMSAdmin.escapeHtml(col)}</th>`;
+  headHtml += "</tr>";
+  head.innerHTML = headHtml;
+
+  const totalPages = Math.max(1, Math.ceil(sortedTs.length / PAGE_SIZE));
+  if (currentPage > totalPages) currentPage = totalPages;
+
+  const startIdx = sortedTs.length - (currentPage * PAGE_SIZE);
+  const endIdx = sortedTs.length - ((currentPage - 1) * PAGE_SIZE);
+  const pageTs = sortedTs.slice(Math.max(0, startIdx), Math.min(sortedTs.length, endIdx)).reverse();
+
+  const body = document.getElementById("rows-body");
+  body.innerHTML = pageTs.map(ts => {
+    const rec = tsMap.get(ts);
+    let row = `<td>${OpenEMSAdmin.formatDateTime(ts)}</td>`;
+    for (const pid of pids) {
+      row += `<td>${formatValue(rec[pid])}</td>`;
+    }
+    return `<tr>${row}</tr>`;
+  }).join("");
+
+  document.getElementById("pagination").innerHTML = `
+    <button ${currentPage <= 1 ? "disabled" : ""} onclick="goPage(${currentPage - 1})">上一页</button>
+    <span>第 ${currentPage} / ${totalPages} 页 (共 ${sortedTs.length} 条时间点)</span>
+    <button ${currentPage >= totalPages ? "disabled" : ""} onclick="goPage(${currentPage + 1})">下一页</button>
+  `;
+}
+
+function goPage(p) {
+  currentPage = p;
+  if (queryMode === "multi") renderMultiTable();
+  else if (isAggregate) renderAggregateTable();
+  else renderSingleTable();
+}
+
+// ── Query dispatch ──────────────────────────────────────────────
+async function doQuery() {
+  const start = fromLocalInputValue(document.getElementById("start-input").value);
+  const end = fromLocalInputValue(document.getElementById("end-input").value);
+  if (start === null || end === null) return;
+  document.getElementById("status").textContent = "查询中...";
+  currentPage = 1;
+
+  try {
+    if (queryMode === "multi") {
+      if (!selectedPointIds.length) {
+        document.getElementById("status").textContent = "请至少选择一个点位";
+        return;
+      }
+      const url = `/api/history/query_multi?point_ids=${encodeURIComponent(selectedPointIds.join(","))}&start=${start}&end=${end}&limit=5000`;
+      const data = await OpenEMSAdmin.api(url);
+      multiSeries = data.series || {};
+      allRows = [];
+      aggBuckets = [];
+      drawMultiChart(multiSeries);
+      renderMultiTable();
+      const total = Object.values(multiSeries).reduce((s, v) => s + (v.count || 0), 0);
+      document.getElementById("status").textContent = `多点对比: ${Object.keys(multiSeries).length} 个点位, 共 ${total} 条`;
+    } else {
+      const pointId = document.getElementById("point-select").value;
+      if (!pointId) return;
+      const point = points.find(p => p.id === pointId);
+      currentUnit = point ? point.unit || "" : "";
+
+      if (isAggregate) {
+        aggInterval = document.getElementById("agg-interval").value;
+        const url = `/api/history/query_aggregate?point_id=${encodeURIComponent(pointId)}&interval=${aggInterval}&start=${start}&end=${end}`;
+        const data = await OpenEMSAdmin.api(url);
+        aggBuckets = data.buckets || [];
+        currentUnit = data.unit || currentUnit;
+        allRows = [];
+        multiSeries = {};
+        drawAggregateChart(aggBuckets, currentUnit);
+        renderAggregateTable();
+        document.getElementById("status").textContent = `聚合统计: ${formatBucketInterval(aggInterval)}, ${aggBuckets.length} 个区间`;
+      } else {
+        const url = `/api/history/query?point_id=${encodeURIComponent(pointId)}&start=${start}&end=${end}&limit=5000`;
+        const data = await OpenEMSAdmin.api(url);
+        allRows = data.rows || [];
+        aggBuckets = [];
+        multiSeries = {};
+        drawChart(allRows);
+        renderSingleTable();
+        document.getElementById("status").textContent = `共加载 ${allRows.length} 条`;
+      }
+    }
+    document.getElementById("export-btn").disabled = false;
+  } catch (err) {
+    document.getElementById("status").textContent = "查询失败: " + (err.message || err);
+    document.getElementById("export-btn").disabled = true;
+  }
+}
+
+// ── CSV Export ──────────────────────────────────────────────────
+document.getElementById("export-btn").addEventListener("click", exportCSV);
+
+function exportCSV() {
+  let csv = "";
+  let filename = "";
+
+  if (isAggregate && aggBuckets.length) {
+    // aggregate CSV
+    const pid = document.getElementById("point-select").value || "unknown";
+    csv = "bucket_start,avg,min,max,count,quality_good_pct\n";
+    for (const b of aggBuckets) {
+      csv += `${b.bucket_start},${b.avg},${b.min},${b.max},${b.count},${b.quality_good_pct}\n`;
+    }
+    filename = csvFilename(pid);
+  } else if (queryMode === "multi" && Object.keys(multiSeries).length) {
+    // multi-point wide-table CSV
+    const pids = Object.keys(multiSeries);
+    const tsMap = new Map();
+    const unitHeaders = [];
+    for (const pid of pids) {
+      const unit = multiSeries[pid].unit || "";
+      unitHeaders.push(pid + (unit ? "(" + unit + ")" : ""));
+      const rows = (multiSeries[pid].rows || []).filter(r => r.valid && typeof r.value === "number");
+      for (const r of rows) {
+        if (!tsMap.has(r.ts)) tsMap.set(r.ts, {});
+        tsMap.get(r.ts)[pid] = r.value;
+      }
+    }
+    csv = "timestamp," + unitHeaders.join(",") + "\n";
+    const sortedTs = [...tsMap.keys()].sort((a, b) => a - b);
+    for (const ts of sortedTs) {
+      const rec = tsMap.get(ts);
+      csv += ts + "," + pids.map(pid => rec[pid] !== undefined ? rec[pid] : "").join(",") + "\n";
+    }
+    filename = csvFilename("multi_" + pids.slice(0, 3).join("_"));
+  } else if (allRows.length) {
+    // single-point CSV
+    const pid = document.getElementById("point-select").value || "unknown";
+    csv = "timestamp,value,quality,valid\n";
+    for (const r of allRows) {
+      csv += `${r.ts},${r.value},${r.quality || "Unknown"},${r.valid}\n`;
+    }
+    filename = csvFilename(pid);
+  } else {
+    return;
+  }
+
+  const blob = new Blob([csv], {type: "text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvFilename(prefix) {
+  const start = fromLocalInputValue(document.getElementById("start-input").value);
+  const end = fromLocalInputValue(document.getElementById("end-input").value);
+  const fmtTs = ts => {
+    const d = new Date(ts);
+    return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+  };
+  return `${prefix}_${fmtTs(start || 0)}_${fmtTs(end || 0)}.csv`;
+}
+
+// ── Init ────────────────────────────────────────────────────────
 async function loadPoints() {
   const data = await OpenEMSAdmin.api("/api/history/points");
   points = data.points || [];
   const select = document.getElementById("point-select");
-  select.innerHTML = points.map((p) => `<option value="${p.id}">${OpenEMSAdmin.escapeHtml(`${p.id} (${p.category}${p.unit ? ", " + p.unit : ""})`)}</option>`).join("");
+  select.innerHTML = points.map(p => `<option value="${p.id}">${OpenEMSAdmin.escapeHtml(`${p.id} (${p.category}${p.unit ? ", "+p.unit : ""})`)}</option>`).join("");
   document.getElementById("status").textContent = points.length ? "点位加载完成" : "没有可查询点位";
+  buildMultiPanel();
   if (points.length) {
-    await queryHistory();
+    await doQuery();
   }
-}
-
-async function queryHistory() {
-  const pointId = document.getElementById("point-select").value;
-  const start = fromLocalInputValue(document.getElementById("start-input").value);
-  const end = fromLocalInputValue(document.getElementById("end-input").value);
-  if (!pointId || start === null || end === null) return;
-  const point = points.find((item) => item.id === pointId);
-  currentUnit = point ? point.unit || "" : "";
-  document.getElementById("status").textContent = "查询中...";
-  currentPage = 1;
-  const url = `/api/history/query?point_id=${encodeURIComponent(pointId)}&start=${start}&end=${end}&limit=5000`;
-  const data = await OpenEMSAdmin.api(url);
-  allRows = data.rows || [];
-  drawChart(allRows);
-  renderPage();
-  document.getElementById("status").textContent = `共加载 ${allRows.length} 条`;
 }
 
 async function boot() {
@@ -385,7 +962,7 @@ async function boot() {
   const now = Date.now();
   document.getElementById("start-input").value = toLocalInputValue(now - 3600 * 1000);
   document.getElementById("end-input").value = toLocalInputValue(now);
-  document.getElementById("query-btn").addEventListener("click", queryHistory);
+  document.getElementById("query-btn").addEventListener("click", doQuery);
   await loadPoints();
 }
 
