@@ -9,4 +9,4 @@ if (-not $env:OPENEMS_DB_URL) {
 Write-Host "OPENEMS_DB_URL is configured."
 Write-Host "Starting OpenEMS RtDb service with PostgreSQL config source..."
 
-& ".\bin\openems-rtdb-service.exe" "postgresql" "config/tables"
+& ".\bin\openems-rtdb-service.exe" "postgresql"

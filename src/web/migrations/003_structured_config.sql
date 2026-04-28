@@ -22,7 +22,12 @@ CREATE TABLE IF NOT EXISTS devices (
     port INTEGER NOT NULL DEFAULT 0,
     unit_id INTEGER NOT NULL DEFAULT 0,
     poll_interval_ms INTEGER NOT NULL DEFAULT 1000,
-    common_address INTEGER NULL
+    common_address INTEGER NULL,
+    serial_port TEXT NOT NULL DEFAULT '',
+    baud_rate INTEGER NOT NULL DEFAULT 9600,
+    parity VARCHAR(8) NOT NULL DEFAULT 'N',
+    data_bits INTEGER NOT NULL DEFAULT 8,
+    stop_bits INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_devices_site_id ON devices(site_id);
@@ -239,11 +244,6 @@ ON CONFLICT (id) DO UPDATE SET target_type=EXCLUDED.target_type, target_id=EXCLU
 DO $$
 BEGIN
     IF to_regclass('public.config_tables') IS NOT NULL THEN
-        IF to_regclass('public.config_tables_legacy') IS NULL THEN
-            ALTER TABLE public.config_tables RENAME TO config_tables_legacy;
-        ELSE
-            DROP TABLE public.config_tables;
-        END IF;
+        DROP TABLE public.config_tables;
     END IF;
 END $$;
-

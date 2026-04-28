@@ -12,14 +12,15 @@ namespace openems::history {
 
 class HistoryWriter {
 public:
-  explicit HistoryWriter(const std::string& history_dir,
-                         const std::unordered_map<std::string, std::string>& units);
+  explicit HistoryWriter(const std::unordered_map<std::string, std::string>& units);
+  ~HistoryWriter();
 
-  void write(const rt_db::SiteSnapshot& snap);
+  bool is_ready() const { return db_available_; }
+  const std::string& last_error() const { return last_error_; }
+  bool write(const rt_db::SiteSnapshot& snap);
 
 private:
   bool write_to_db(const rt_db::SiteSnapshot& snap);
-  void write_to_jsonl(const rt_db::SiteSnapshot& snap);
 
   bool connect();
   void try_reconnect();
@@ -30,9 +31,8 @@ private:
   void* conn_ = nullptr;
   bool db_available_ = false;
   int reconnect_delay_ms_ = 2000;
+  std::string last_error_;
 
-  // JSONL state
-  std::string history_dir_;
   std::unordered_map<std::string, std::string> units_;
 
   // Helpers
@@ -41,7 +41,6 @@ private:
   static std::string valid_to_string(bool v);
   static std::string quality_to_string(common::Quality q);
   static std::string category_to_string(uint8_t cat);
-  static std::string json_escape(const std::string& value);
   static std::string sql_escape(const std::string& value);
 };
 

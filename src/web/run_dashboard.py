@@ -3,12 +3,14 @@
 Usage: python run_dashboard.py [--port PORT] [--shm-name NAME]
 """
 
+import os
 import sys
+
 import uvicorn
 
 def main():
     port = 8080
-    shm_name = "Local\\openems_rt_db"
+    shm_name = os.getenv("OPENEMS_SHM_NAME") or ("Local\\openems_rt_db" if os.name == "nt" else "/openems_rt_db")
 
     i = 1
     while i < len(sys.argv):
@@ -17,6 +19,7 @@ def main():
             i += 2
         elif sys.argv[i] == "--shm-name" and i + 1 < len(sys.argv):
             shm_name = sys.argv[i + 1]
+            os.environ["OPENEMS_SHM_NAME"] = shm_name
             i += 2
         else:
             i += 1

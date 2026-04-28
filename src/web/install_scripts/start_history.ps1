@@ -9,4 +9,4 @@ Write-Host "Working directory: $scriptRoot"
 Write-Host "OPENEMS_DB_URL=$env:OPENEMS_DB_URL"
 Write-Host "Starting OpenEMS history sampler..."
 
-& ".\bin\openems-history.exe" "Local\openems_rt_db" "runtime/history" "1000"
+& ".\bin\openems-history.exe" "Local\openems_rt_db" "1000"

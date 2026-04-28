@@ -3,44 +3,57 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 
 namespace openems::history {
 
-HistoryWriter::HistoryWriter(const std::string& history_dir,
-                             const std::unordered_map<std::string, std::string>& units)
-    : history_dir_(history_dir), units_(units) {
+HistoryWriter::HistoryWriter(const std::unordered_map<std::string, std::string>& units)
+    : units_(units) {
   const char* env = std::getenv("OPENEMS_DB_URL");
   db_url_ = env ? std::string(env) : "";
 
-  if (!db_url_.empty()) {
-    auto api_result = libpq::load_libpq();
-    if (api_result.is_ok()) {
-      api_ = std::move(api_result.value());
-      if (connect()) {
-        OPENEMS_LOG_I("HistoryWriter", "Connected to TimescaleDB");
-      } else {
-        OPENEMS_LOG_W("HistoryWriter", "TimescaleDB connection failed; writing to JSONL only");
-      }
-    } else {
-      OPENEMS_LOG_W("HistoryWriter", "libpq not available: " + api_result.error_msg() + "; writing to JSONL only");
-    }
-  } else {
-    OPENEMS_LOG_I("HistoryWriter", "OPENEMS_DB_URL not set; writing to JSONL only");
+  if (db_url_.empty()) {
+    last_error_ = "OPENEMS_DB_URL not set";
+    OPENEMS_LOG_E("HistoryWriter", last_error_);
+    return;
+  }
+
+  auto api_result = libpq::load_libpq();
+  if (!api_result.is_ok()) {
+    last_error_ = "libpq not available: " + api_result.error_msg();
+    OPENEMS_LOG_E("HistoryWriter", last_error_);
+    return;
+  }
+
+  api_ = std::move(api_result.value());
+  if (!connect()) {
+    if (last_error_.empty()) last_error_ = "Failed to connect to TimescaleDB";
+    return;
+  }
+
+  OPENEMS_LOG_I("HistoryWriter", "Connected to TimescaleDB");
+}
+
+HistoryWriter::~HistoryWriter() {
+  if (conn_) {
+    api_.PQfinish(conn_);
+    conn_ = nullptr;
   }
 }
 
-void HistoryWriter::write(const rt_db::SiteSnapshot& snap) {
-  if (db_available_) {
-    if (write_to_db(snap)) return;
-    // DB write failed — fall back to JSONL
-    OPENEMS_LOG_W("HistoryWriter", "DB write failed, falling back to JSONL");
+bool HistoryWriter::write(const rt_db::SiteSnapshot& snap) {
+  if (!write_to_db(snap)) {
+    if (last_error_.empty()) {
+      last_error_ = "Failed to write history samples to PostgreSQL";
+    }
+    OPENEMS_LOG_E("HistoryWriter", last_error_);
+    return false;
   }
-  write_to_jsonl(snap);
+  return true;
 }
 
 bool HistoryWriter::write_to_db(const rt_db::SiteSnapshot& snap) {
@@ -49,11 +62,11 @@ bool HistoryWriter::write_to_db(const rt_db::SiteSnapshot& snap) {
     if (!db_available_) return false;
   }
 
-  // BEGIN
   void* begin_res = api_.PQexec(conn_, "BEGIN");
   if (!begin_res || api_.PQresultStatus(begin_res) != 1 /* PGRES_COMMAND_OK */) {
     if (begin_res) api_.PQclear(begin_res);
     db_available_ = false;
+    last_error_ = "Failed to start history transaction: " + std::string(api_.PQerrorMessage(conn_));
     return false;
   }
   api_.PQclear(begin_res);
@@ -115,13 +128,12 @@ bool HistoryWriter::write_to_db(const rt_db::SiteSnapshot& snap) {
       static_cast<int>(qual_str.size()),
       static_cast<int>(valid_str.size()),
     };
-    int param_formats[9] = {0};  // all text format
+    int param_formats[9] = {0};
 
     void* res = nullptr;
     if (api_.PQexecParams) {
       res = api_.PQexecParams(conn_, sql, 9, nullptr, param_values, param_lengths, param_formats, 0);
     } else {
-      // Fallback: build literal SQL (no PQexecParams available)
       std::ostringstream oss;
       oss << "INSERT INTO history_samples(ts, site_id, point_id, device_id, category, value, unit, quality, valid) VALUES ("
           << "'" << sql_escape(ts_str) << "',"
@@ -132,14 +144,14 @@ bool HistoryWriter::write_to_db(const rt_db::SiteSnapshot& snap) {
           << val_str << ","
           << "'" << sql_escape(unit) << "',"
           << "'" << sql_escape(qual_str) << "',"
-          << "'" << sql_escape(valid_str) << "'";
-      oss << ")";
+          << "'" << sql_escape(valid_str) << "')";
       res = api_.PQexec(conn_, oss.str().c_str());
     }
 
     if (!res || api_.PQresultStatus(res) != 1 /* PGRES_COMMAND_OK */) {
       if (res) api_.PQclear(res);
       all_ok = false;
+      last_error_ = "History INSERT failed: " + std::string(api_.PQerrorMessage(conn_));
       break;
     }
     api_.PQclear(res);
@@ -147,97 +159,50 @@ bool HistoryWriter::write_to_db(const rt_db::SiteSnapshot& snap) {
 
   if (all_ok) {
     void* commit_res = api_.PQexec(conn_, "COMMIT");
-    if (commit_res) api_.PQclear(commit_res);
-    return true;
-  } else {
-    void* rollback_res = api_.PQexec(conn_, "ROLLBACK");
-    if (rollback_res) api_.PQclear(rollback_res);
-    db_available_ = false;
-    return false;
-  }
-}
-
-void HistoryWriter::write_to_jsonl(const rt_db::SiteSnapshot& snap) {
-  namespace fs = std::filesystem;
-  fs::create_directories(history_dir_);
-
-  uint64_t row_ts = snap.snapshot_time > 0 ? snap.snapshot_time
-      : std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count();
-
-  // date file name
-  std::time_t seconds = static_cast<std::time_t>(row_ts / 1000);
-  std::tm local_tm{};
-#ifdef _WIN32
-  localtime_s(&local_tm, &seconds);
-#else
-  localtime_r(&seconds, &local_tm);
-#endif
-  std::ostringstream fname_oss;
-  fname_oss << std::put_time(&local_tm, "%Y%m%d") << ".jsonl";
-
-  fs::path output_path = fs::path(history_dir_) / fname_oss.str();
-  std::ofstream out(output_path, std::ios::app);
-  if (!out.is_open()) {
-    OPENEMS_LOG_W("HistoryWriter", "Failed to open JSONL output: " + output_path.string());
-    return;
-  }
-
-  size_t telemetry_idx = 0;
-  size_t teleindication_idx = 0;
-  for (size_t i = 0; i < snap.point_ids.size(); ++i) {
-    uint8_t category = snap.point_categories[i];
-    double value = 0.0;
-    if (category == 1) {
-      if (teleindication_idx >= snap.teleindication_values.size()) continue;
-      value = static_cast<double>(snap.teleindication_values[teleindication_idx++]);
-    } else {
-      if (telemetry_idx >= snap.telemetry_values.size()) continue;
-      value = snap.telemetry_values[telemetry_idx++];
+    if (!commit_res || api_.PQresultStatus(commit_res) != 1 /* PGRES_COMMAND_OK */) {
+      if (commit_res) api_.PQclear(commit_res);
+      db_available_ = false;
+      last_error_ = "History COMMIT failed: " + std::string(api_.PQerrorMessage(conn_));
+      return false;
     }
-
-    uint64_t ts = i < snap.timestamps.size() && snap.timestamps[i] > 0
-        ? snap.timestamps[i] : row_ts;
-    std::string unit;
-    auto unit_it = units_.find(snap.point_ids[i]);
-    if (unit_it != units_.end()) unit = unit_it->second;
-
-    out << "{"
-        << "\"ts\":" << ts << ","
-        << "\"site_id\":\"" << json_escape(snap.site_id) << "\","
-        << "\"point_id\":\"" << json_escape(snap.point_ids[i]) << "\","
-        << "\"device_id\":\"" << json_escape(snap.device_ids[i]) << "\","
-        << "\"category\":\"" << json_escape(category_to_string(category)) << "\","
-        << "\"value\":" << std::fixed << std::setprecision(6) << value << ","
-        << "\"unit\":\"" << json_escape(unit) << "\","
-        << "\"quality\":\"" << json_escape(quality_to_string(snap.qualities[i])) << "\","
-        << "\"valid\":" << (snap.valids[i] ? "true" : "false")
-    << "}\n";
+    api_.PQclear(commit_res);
+    last_error_.clear();
+    return true;
   }
 
-  out.flush();
+  void* rollback_res = api_.PQexec(conn_, "ROLLBACK");
+  if (rollback_res) api_.PQclear(rollback_res);
+  db_available_ = false;
+  return false;
 }
 
 bool HistoryWriter::connect() {
   if (db_url_.empty() || !api_.handle) return false;
   conn_ = api_.PQconnectdb(db_url_.c_str());
   if (!conn_ || api_.PQstatus(conn_) != 0) {
-    std::string error = conn_ ? api_.PQerrorMessage(conn_) : "failed to allocate connection";
-    OPENEMS_LOG_W("HistoryWriter", "DB connect failed: " + error);
-    if (conn_) { api_.PQfinish(conn_); conn_ = nullptr; }
+    last_error_ = "DB connect failed: " + std::string(conn_ ? api_.PQerrorMessage(conn_) : "failed to allocate connection");
+    OPENEMS_LOG_E("HistoryWriter", last_error_);
+    if (conn_) {
+      api_.PQfinish(conn_);
+      conn_ = nullptr;
+    }
     db_available_ = false;
     return false;
   }
   db_available_ = true;
   reconnect_delay_ms_ = 2000;
+  last_error_.clear();
   return true;
 }
 
 void HistoryWriter::try_reconnect() {
-  if (conn_) { api_.PQfinish(conn_); conn_ = nullptr; }
+  if (conn_) {
+    api_.PQfinish(conn_);
+    conn_ = nullptr;
+  }
   db_available_ = false;
 
-  OPENEMS_LOG_I("HistoryWriter", "Attempting DB reconnect in " + std::to_string(reconnect_delay_ms_) + "ms");
+  OPENEMS_LOG_W("HistoryWriter", "Attempting DB reconnect in " + std::to_string(reconnect_delay_ms_) + "ms");
   std::this_thread::sleep_for(std::chrono::milliseconds(reconnect_delay_ms_));
 
   if (connect()) {
@@ -267,10 +232,9 @@ std::string HistoryWriter::double_to_string(double v) {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(6) << v;
   std::string s = oss.str();
-  // Trim trailing zeros after decimal point
   if (s.find('.') != std::string::npos) {
     while (s.size() > 1 && s.back() == '0') s.pop_back();
-    if (!s.empty() && s.back() == '.') s += '0';  // keep at least one digit after decimal
+    if (!s.empty() && s.back() == '.') s += '0';
   }
   return s;
 }
@@ -297,21 +261,6 @@ std::string HistoryWriter::category_to_string(uint8_t cat) {
     case 3: return "teleadjust";
     default: return "unknown";
   }
-}
-
-std::string HistoryWriter::json_escape(const std::string& value) {
-  std::ostringstream oss;
-  for (char ch : value) {
-    switch (ch) {
-      case '\\': oss << "\\\\"; break;
-      case '"': oss << "\\\""; break;
-      case '\n': oss << "\\n"; break;
-      case '\r': oss << "\\r"; break;
-      case '\t': oss << "\\t"; break;
-      default: oss << ch; break;
-    }
-  }
-  return oss.str();
 }
 
 std::string HistoryWriter::sql_escape(const std::string& value) {

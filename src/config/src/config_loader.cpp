@@ -4,10 +4,7 @@
 #include "openems/utils/logger.h"
 #include "openems/libpq/libpq_api.h"
 
-#include "nlohmann/json.hpp"
-
 #include <cstdlib>
-#include <filesystem>
 #include <map>
 #include <string>
 #include <utility>
@@ -48,27 +45,6 @@ enum {
   kTuplesOk = 2,
 };
 
-static std::string csv_path(const std::string& dir_path, const std::string& filename) {
-  std::string p = dir_path;
-  if (!p.empty() && p.back() != '/' && p.back() != '\\') p += '/';
-  return p + filename;
-}
-
-static std::string json_value_to_string(const nlohmann::json& value) {
-  if (value.is_null()) return "";
-  if (value.is_boolean()) return value.get<bool>() ? "true" : "false";
-  if (value.is_string()) return value.get<std::string>();
-  if (value.is_number_integer()) return std::to_string(value.get<long long>());
-  if (value.is_number_unsigned()) return std::to_string(value.get<unsigned long long>());
-  if (value.is_number_float()) {
-    auto text = std::to_string(value.get<double>());
-    while (text.size() > 1 && text.back() == '0') text.pop_back();
-    if (!text.empty() && text.back() == '.') text.pop_back();
-    return text;
-  }
-  return value.dump();
-}
-
 static common::PointCategory parse_point_category(const std::string& s) {
   if (s == "telemetry") return common::PointCategory::Telemetry;
   if (s == "teleindication") return common::PointCategory::Teleindication;
@@ -98,25 +74,6 @@ static common::DeviceType parse_device_type(const std::string& s) {
   if (s == "Grid") return common::DeviceType::Grid;
   if (s == "Transformer") return common::DeviceType::Transformer;
   return common::DeviceType::Unknown;
-}
-
-static common::Result<TableMap> load_csv_tables(const std::string& dir_path) {
-  TableMap tables;
-  for (const auto& table_name : kRuntimeTables) {
-    auto result = parse_csv_file(csv_path(dir_path, table_name + ".csv"));
-    if (!result.is_ok()) {
-      if (table_name == "telecontrol" || table_name == "teleadjust") {
-        CsvTable empty;
-        empty.headers = kTableHeaders.at(table_name);
-        tables[table_name] = std::move(empty);
-        OPENEMS_LOG_D("ConfigLoader", table_name + ".csv not found or empty - skipping");
-        continue;
-      }
-      return common::Result<TableMap>::Err(result.error_code(), result.error_msg());
-    }
-    tables[table_name] = std::move(result.value());
-  }
-  return common::Result<TableMap>::Ok(std::move(tables));
 }
 
 static common::Result<TableMap> load_postgres_tables(const std::string& db_url) {
@@ -375,15 +332,15 @@ static std::string env_or_empty(const char* name) {
 }  // namespace
 
 common::Result<EmsConfig> ConfigLoader::load(const std::string& dir_path) {
-  return load_from_csv(dir_path);
+  (void)dir_path;
+  return load("postgresql", "", "");
 }
 
 common::Result<EmsConfig> ConfigLoader::load_from_csv(const std::string& dir_path) {
-  auto tables_result = load_csv_tables(dir_path);
-  if (!tables_result.is_ok()) {
-    return common::Result<EmsConfig>::Err(tables_result.error_code(), tables_result.error_msg());
-  }
-  return build_config_from_tables(tables_result.value());
+  (void)dir_path;
+  return common::Result<EmsConfig>::Err(
+      common::ErrorCode::InvalidConfig,
+      "CSV runtime configuration has been removed. Import CSV into PostgreSQL first.");
 }
 
 common::Result<EmsConfig> ConfigLoader::load_from_postgres(const std::string& db_url) {
@@ -397,18 +354,15 @@ common::Result<EmsConfig> ConfigLoader::load_from_postgres(const std::string& db
 common::Result<EmsConfig> ConfigLoader::load(const std::string& source,
                                              const std::string& dir_path,
                                              const std::string& db_url) {
+  (void)dir_path;
   if (source == "csv") {
-    return load_from_csv(dir_path);
+    return common::Result<EmsConfig>::Err(
+        common::ErrorCode::InvalidConfig,
+        "CSV runtime mode is no longer supported. Use PostgreSQL configuration.");
   }
 
   const std::string effective_db_url = db_url.empty() ? env_or_empty("OPENEMS_DB_URL") : db_url;
-  auto pg_result = load_from_postgres(effective_db_url);
-  if (pg_result.is_ok()) {
-    return pg_result;
-  }
-
-  OPENEMS_LOG_W("ConfigLoader", "PostgreSQL config load failed: " + pg_result.error_msg() + "; falling back to CSV: " + dir_path);
-  return load_from_csv(dir_path);
+  return load_from_postgres(effective_db_url);
 }
 
 }  // namespace openems::config

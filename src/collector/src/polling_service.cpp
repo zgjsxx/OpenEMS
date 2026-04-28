@@ -4,6 +4,7 @@
 #include "openems/utils/logger.h"
 #include "openems/utils/time_utils.h"
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 
 namespace openems::collector {

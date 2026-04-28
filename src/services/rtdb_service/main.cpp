@@ -99,13 +99,16 @@ int main(int argc, char* argv[]) {
       if (argc > 2) config_path = argv[2];
       if (argc > 3) shm_name = argv[3];
     } else {
-      // Backward compatibility: old usage was openems-rtdb-service [config_path] [shm_name].
-      config_path = first;
-      if (argc > 2) shm_name = argv[2];
+      if (first.find("config/tables") != std::string::npos || first.find(".csv") != std::string::npos) {
+        OPENEMS_LOG_W("RtDbService", "CSV config path argument is ignored. Runtime config now loads from PostgreSQL only.");
+        if (argc > 2) shm_name = argv[2];
+      } else {
+        shm_name = first;
+      }
     }
   }
 
-  OPENEMS_LOG_I("RtDbService", "Loading config source=" + source + " csv_path=" + config_path);
+  OPENEMS_LOG_I("RtDbService", "Loading runtime config source=" + source);
   auto cfg_result = openems::config::ConfigLoader::load(source, config_path, db_url);
   if (!cfg_result.is_ok()) {
     OPENEMS_LOG_F("RtDbService", "Config failed: " + cfg_result.error_msg());

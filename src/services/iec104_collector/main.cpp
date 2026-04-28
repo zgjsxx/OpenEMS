@@ -57,13 +57,19 @@ int main(int argc, char* argv[]) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
-  std::string config_path = "config/tables";
   std::string shm_name = openems::rt_db::default_shm_name();
-  if (argc > 1) config_path = argv[1];
-  if (argc > 2) shm_name = argv[2];
+  if (argc > 1) {
+    std::string first = argv[1];
+    if (first.find("config/tables") != std::string::npos || first.find(".csv") != std::string::npos) {
+      OPENEMS_LOG_W("IEC104Collector", "CSV config path argument is ignored. Runtime config now loads from PostgreSQL only.");
+      if (argc > 2) shm_name = argv[2];
+    } else {
+      shm_name = first;
+    }
+  }
 
-  OPENEMS_LOG_I("IEC104Collector", "Loading config: " + config_path);
-  auto cfg_result = openems::config::ConfigLoader::load(config_path);
+  OPENEMS_LOG_I("IEC104Collector", "Loading runtime config from PostgreSQL");
+  auto cfg_result = openems::config::ConfigLoader::load("postgresql", "", "");
   if (!cfg_result.is_ok()) {
     OPENEMS_LOG_F("IEC104Collector", "Config failed: " + cfg_result.error_msg());
     return 1;

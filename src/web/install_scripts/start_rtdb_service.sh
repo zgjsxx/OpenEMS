@@ -18,4 +18,4 @@ fi
 echo "OPENEMS_DB_URL is configured."
 echo "Starting OpenEMS RtDb service with PostgreSQL config source..."
 
-exec "./bin/openems-rtdb-service" "postgresql" "config/tables"
+exec "./bin/openems-rtdb-service" "postgresql"

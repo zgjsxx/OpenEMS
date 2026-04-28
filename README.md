@@ -122,3 +122,25 @@ RtDb service 使用运行时动态加载 `libpq`。
 - Linux：`third_party/postgresql/linux/x64/lib/` 中放置 `libpq.so*`，install 时会复制到 `install/lib`。
 
 如果运行库不可用，程序会打印 warning 并回退 CSV。
+## Docker 部署
+
+仓库已提供：
+
+- `Dockerfile`
+- `docker-compose.yml`
+
+可直接启动：
+
+```powershell
+docker compose up --build -d
+```
+
+后台默认地址：
+
+```text
+http://127.0.0.1:8080/login
+```
+
+详细说明见：
+
+- `docs/docker_deploy.md`

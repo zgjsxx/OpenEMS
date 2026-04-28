@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import csv
-import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,14 +24,38 @@ from auth import (
 )
 from config_store import ConfigStore
 from db import Database
-from shm_reader import ShmReader
+
+try:
+    from shm_reader import ShmReader
+except Exception:
+    class ShmReader:  # type: ignore[override]
+        def __init__(self, shm_name: str = "Local\\openems_rt_db"):
+            self.shm_name = shm_name
+            self._attached = False
+
+        def attach(self) -> bool:
+            self._attached = False
+            return False
+
+        def detach(self):
+            self._attached = False
+
+        def is_attached(self) -> bool:
+            return False
+
+        def read_snapshot(self) -> Dict[str, Any]:
+            return {"error": "Shared memory reader is not available on this platform.", "points": []}
+
+        def submit_command(self, point_id: str, desired_value: float) -> Dict[str, Any]:
+            return {"error": "Shared memory command submission is not available on this platform."}
+
+        def read_command_status(self, point_id: str) -> Dict[str, Any]:
+            return {"error": "Shared memory command status is not available on this platform."}
 
 WEB_DIR = Path(__file__).resolve().parent
 APP_ROOT = Path.cwd().resolve()
 RUNTIME_DIR = APP_ROOT / "runtime"
 CONFIG_DIR = APP_ROOT / "config" / "tables"
-ALARM_FILE = RUNTIME_DIR / "alarms_active.json"
-HISTORY_DIR = RUNTIME_DIR / "history"
 MIGRATIONS_DIR = WEB_DIR / "migrations"
 
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "admin": 3}
@@ -165,155 +187,51 @@ def _page_response(request: Request, filename: str, required_role: str = "viewer
     return HTMLResponse((WEB_DIR / filename).read_text(encoding="utf-8"))
 
 
-def _active_alarm_file_payload() -> Dict[str, Any]:
-    if not ALARM_FILE.exists():
-        return {"generated_at": 0, "count": 0, "alarms": []}
-    try:
-        with ALARM_FILE.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        alarms = data.get("alarms", [])
-        return {"generated_at": data.get("generated_at", 0), "count": len(alarms), "alarms": alarms}
-    except Exception as exc:
-        return {"generated_at": 0, "count": 0, "alarms": [], "error": "Failed to read active alarm file: " + str(exc)}
-
 _ingest_logger = logging.getLogger("openems.ingestion")
-
-def _parse_jsonl_lines(lines: List[str], point_id: str = "", start_ms: int = 0, end_ms: int = 0) -> List[Dict[str, Any]]:
-    """Parse JSONL lines, optionally filtering by point_id and time range."""
-    records: List[Dict[str, Any]] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if point_id and record.get("point_id") != point_id:
-            continue
-        ts = int(record.get("ts") or 0)
-        if start_ms and ts < start_ms:
-            continue
-        if end_ms and ts > end_ms:
-            continue
-        records.append(record)
-    return records
-
-async def _catchup_loop() -> None:
-    """Background task that catch-up ingests JSONL files when DB becomes available."""
-    _ingest_logger.info("Catch-up loop started (60s cycle)")
-    while True:
-        await asyncio.sleep(60)
-        if not _db_ready():
-            continue
-        try:
-            await _catchup_scan()
-        except Exception as exc:
-            _ingest_logger.warning("Catch-up scan failed: %s", exc)
-
-async def _catchup_scan() -> None:
-    """Scan HISTORY_DIR for JSONL files not yet in TimescaleDB and ingest them."""
-    if not HISTORY_DIR.exists():
-        return
-    try:
-        progress = await asyncio.to_thread(_db.get_ingested_files)
-    except Exception as exc:
-        _ingest_logger.warning("Failed to read ingestion progress: %s", exc)
-        return
-
-    for path in sorted(HISTORY_DIR.glob("*.jsonl")):
-        filename = path.name
-        file_size = path.stat().st_size
-
-        prev = progress.get(filename)
-        # Skip fully ingested files (same size)
-        if prev and prev.get("file_size") == file_size:
-            continue
-
-        # Full read of historical or new file
-        try:
-            text = await asyncio.to_thread(path.read_text, "utf-8")
-        except OSError:
-            continue
-        lines = text.splitlines()
-        records = _parse_jsonl_lines(lines)
-        if not records:
-            await asyncio.to_thread(
-                _db.mark_ingestion_progress, filename, file_size, 0, 0
-            )
-            continue
-
-        BATCH_SIZE = 5000
-        total = 0
-        for i in range(0, len(records), BATCH_SIZE):
-            batch = records[i : i + BATCH_SIZE]
-            try:
-                await asyncio.to_thread(_db.insert_history_batch, batch)
-                total += len(batch)
-            except Exception as exc:
-                _ingest_logger.error("Catch-up batch insert failed for %s: %s", filename, exc)
-                break
-
-        await asyncio.to_thread(
-            _db.mark_ingestion_progress, filename, file_size, len(lines), file_size
-        )
-        _ingest_logger.info("Catch-up ingested %d records from %s", total, filename)
-
-
 def _point_lookup() -> Dict[str, Dict[str, Any]]:
+    _require_db()
     lookup: Dict[str, Dict[str, Any]] = {}
-    for category, filename in POINT_TABLES.items():
-        path = CONFIG_DIR / filename
-        if not path.exists():
+    for row in _db.list_point_metadata():
+        point_id = str(row.get("id") or "").strip()
+        if not point_id:
             continue
-        with path.open(encoding="utf-8") as handle:
-            reader = csv.DictReader(line for line in handle if line.strip() and not line.lstrip().startswith("#"))
-            for row in reader:
-                point_id = (row.get("id") or "").strip()
-                if not point_id:
-                    continue
-                lookup[point_id] = {
-                    "id": point_id,
-                    "device_id": (row.get("device_id") or "").strip(),
-                    "name": (row.get("name") or point_id).strip(),
-                    "category": category,
-                    "unit": (row.get("unit") or "").strip(),
-                }
+        lookup[point_id] = row
     return lookup
 
-
-def _sync_active_alarms_to_db() -> Dict[str, Any]:
-    payload = _active_alarm_file_payload()
-    if _db_ready():
-        point_lookup = _point_lookup()
-        alarms = []
-        for alarm in payload.get("alarms", []):
-            enriched = dict(alarm)
-            point_meta = point_lookup.get((alarm.get("point_id") or "").strip(), {})
-            if not enriched.get("device_id"):
-                enriched["device_id"] = point_meta.get("device_id", "")
-            if not enriched.get("value_display"):
-                value = enriched.get("value")
-                unit = point_meta.get("unit") or enriched.get("unit") or ""
-                enriched["value_display"] = f"{value} {unit}".strip() if value is not None else ""
-            alarms.append(enriched)
-        _db.sync_active_alarms(alarms)
-    return payload
+def _active_alarm_payload() -> Dict[str, Any]:
+    _require_db()
+    rows = _db.list_alarms(status="active", limit=1000)
+    alarms: List[Dict[str, Any]] = []
+    generated_at = 0
+    for row in rows:
+        ts_text = row.get("last_seen_at") or row.get("active_since")
+        ts_ms = 0
+        if isinstance(ts_text, str) and ts_text:
+            try:
+                ts_ms = int(datetime.fromisoformat(ts_text.replace("Z", "+00:00")).timestamp() * 1000)
+            except ValueError:
+                ts_ms = 0
+        generated_at = max(generated_at, ts_ms)
+        alarms.append(
+            {
+                "id": row.get("alarm_id", ""),
+                "alarm_id": row.get("alarm_id", ""),
+                "severity": row.get("severity", ""),
+                "level": row.get("severity", ""),
+                "point_id": row.get("point_id", ""),
+                "device_id": row.get("device_id", ""),
+                "message": row.get("message", ""),
+                "value_display": row.get("value_text", ""),
+                "trigger_time": ts_ms,
+                "last_update_time": ts_ms,
+                "status": row.get("status", ""),
+            }
+        )
+    return {"generated_at": generated_at, "count": len(alarms), "alarms": alarms}
 
 
 def _read_point_metadata() -> List[Dict[str, Any]]:
     return list(_point_lookup().values())
-
-
-def _history_day_files(start_ms: int, end_ms: int) -> List[Path]:
-    start_day = datetime.fromtimestamp(start_ms / 1000).date()
-    end_day = datetime.fromtimestamp(end_ms / 1000).date()
-    paths: List[Path] = []
-    current = start_day
-    while current <= end_day:
-        paths.append(HISTORY_DIR / f"{current:%Y%m%d}.jsonl")
-        current = current + timedelta(days=1)
-    return paths
 
 
 def _config_overview() -> Dict[str, Any]:
@@ -340,15 +258,8 @@ def _config_overview() -> Dict[str, Any]:
 
 
 def _load_config_tables() -> tuple[Dict[str, Any], str, str | None]:
-    if _db_ready():
-        try:
-            tables = _db.load_structured_config()
-            if tables.get("site") or tables.get("device") or tables.get("ems_config"):
-                return tables, "postgresql", None
-            return _config_store.load(), "csv", "PostgreSQL structured config is empty; using CSV fallback."
-        except Exception as exc:
-            return _config_store.load(), "csv", "PostgreSQL structured config load failed: " + str(exc)
-    return _config_store.load(), "csv", _db_state.get("error") or _db.last_error or "Database unavailable."
+    _require_db()
+    return _db.load_structured_config(), "postgresql", None
 
 
 def _parse_float(value: Any, default: float = 0.0) -> float:
@@ -543,12 +454,10 @@ def _safe_audit(
 @app.on_event("startup")
 async def startup():
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     (RUNTIME_DIR / "config_backups").mkdir(parents=True, exist_ok=True)
     _reader.attach()
     global _db_state
     _db_state = _db.initialize()
-    asyncio.create_task(_catchup_loop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -665,7 +574,7 @@ async def api_auth_logout(request: Request):
 @app.get("/api/system/status")
 async def api_system_status(request: Request):
     _session_user(request, "viewer")
-    alarm_payload = _sync_active_alarms_to_db()
+    alarm_payload = _active_alarm_payload()
     config_summary = _config_overview()
     return JSONResponse(
         {
@@ -742,13 +651,12 @@ async def api_command_status(request: Request, point_id: str):
 @app.get("/api/alarms/active")
 async def api_active_alarms(request: Request):
     _session_user(request, "viewer")
-    return JSONResponse(_sync_active_alarms_to_db())
+    return JSONResponse(_active_alarm_payload())
 
 
 @app.get("/api/alarms")
 async def api_alarms(request: Request, status: str = "active", severity: str = "", device_id: str = "", limit: int = 200):
     _session_user(request, "viewer")
-    _sync_active_alarms_to_db()
     _require_db()
     rows = _db.list_alarms(status=status or None, severity=severity or None, device_id=device_id or None, limit=limit)
     return JSONResponse({"rows": rows, "count": len(rows)})
@@ -757,7 +665,6 @@ async def api_alarms(request: Request, status: str = "active", severity: str = "
 @app.post("/api/alarms/{alarm_id}/ack")
 async def api_alarm_ack(request: Request, alarm_id: str):
     user = _session_user(request, "operator")
-    _sync_active_alarms_to_db()
     row = _db.ack_alarm(alarm_id, str(user["username"]))
     if not row:
         return _json_error("Alarm not found.", 404)
@@ -768,7 +675,6 @@ async def api_alarm_ack(request: Request, alarm_id: str):
 @app.post("/api/alarms/{alarm_id}/silence")
 async def api_alarm_silence(request: Request, alarm_id: str):
     user = _session_user(request, "operator")
-    _sync_active_alarms_to_db()
     row = _db.silence_alarm(alarm_id, str(user["username"]))
     if not row:
         return _json_error("Alarm not found.", 404)
@@ -779,12 +685,14 @@ async def api_alarm_silence(request: Request, alarm_id: str):
 @app.get("/api/history/points")
 async def api_history_points(request: Request):
     _session_user(request, "viewer")
+    _require_db()
     return JSONResponse({"points": _read_point_metadata()})
 
 
 @app.get("/api/history/query")
 async def api_history_query(request: Request, point_id: str, start: Optional[int] = None, end: Optional[int] = None, limit: int = 5000):
     _session_user(request, "viewer")
+    _require_db()
     now = int(time.time() * 1000)
     end_ms = end if end is not None else now
     start_ms = start if start is not None else end_ms - 3600 * 1000
@@ -793,43 +701,8 @@ async def api_history_query(request: Request, point_id: str, start: Optional[int
 
     limit = max(1, min(limit, 20000))
 
-    # Try TimescaleDB first
-    if _db_ready():
-        try:
-            rows = await asyncio.to_thread(_db.query_history, point_id, start_ms, end_ms, limit)
-            if rows:
-                return JSONResponse({"point_id": point_id, "count": len(rows), "rows": rows, "source": "timescaledb"})
-        except Exception:
-            pass  # fall through to JSONL
-
-    # Fallback: scan JSONL files
-    rows: List[Dict[str, Any]] = []
-    for path in _history_day_files(start_ms, end_ms):
-        if not path.exists():
-            continue
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    if len(rows) >= limit:
-                        break
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if record.get("point_id") != point_id:
-                        continue
-                    ts = int(record.get("ts") or 0)
-                    if ts < start_ms or ts > end_ms:
-                        continue
-                    rows.append({"ts": ts, "value": record.get("value"), "quality": record.get("quality", "Unknown"), "valid": bool(record.get("valid", False))})
-        except OSError:
-            continue
-        if len(rows) >= limit:
-            break
-    return JSONResponse({"point_id": point_id, "count": len(rows), "rows": rows})
+    rows = await asyncio.to_thread(_db.query_history, point_id, start_ms, end_ms, limit)
+    return JSONResponse({"point_id": point_id, "count": len(rows), "rows": rows, "source": "timescaledb"})
 
 
 @app.get("/api/history/query_multi")
@@ -903,7 +776,7 @@ async def api_topology(request: Request):
             _reader.detach()
     else:
         snapshot = {"error": "Shared memory not available. Is a collector running?", "points": []}
-    alarm_payload = _sync_active_alarms_to_db()
+    alarm_payload = _active_alarm_payload()
     return JSONResponse(_build_topology_payload(tables, snapshot, alarm_payload))
 
 
@@ -951,13 +824,10 @@ async def api_comm_save(request: Request, req: ConfigEditorRequest):
         else:
             try:
                 await asyncio.to_thread(_db.save_structured_config, result.get("tables", {}))
-                backup_dir = await asyncio.to_thread(_config_store.write_csv, result.get("tables", {}))
                 result.update({
                     "ok": True,
                     "message": "Structured PostgreSQL config saved successfully.",
-                    "backup_dir": str(backup_dir) if backup_dir else "",
                     "source": "postgresql",
-                    "csv_export": {"ok": True},
                     "restart_required": [
                         "openems-rtdb-service",
                         "openems-modbus-collector",

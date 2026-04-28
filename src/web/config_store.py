@@ -63,6 +63,11 @@ TABLE_SCHEMAS = [
             {"name": "unit_id", "label": "Unit ID", "required": True, "type": "number"},
             {"name": "poll_interval_ms", "label": "Poll Interval (ms)", "required": True, "type": "number"},
             {"name": "common_address", "label": "IEC104 Common Address", "required": False, "type": "number"},
+            {"name": "serial_port", "label": "Serial Port", "required": False, "type": "text"},
+            {"name": "baud_rate", "label": "Baud Rate", "required": False, "type": "number"},
+            {"name": "parity", "label": "Parity", "required": False, "type": "text"},
+            {"name": "data_bits", "label": "Data Bits", "required": False, "type": "number"},
+            {"name": "stop_bits", "label": "Stop Bits", "required": False, "type": "number"},
         ],
     },
     {

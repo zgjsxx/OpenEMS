@@ -192,13 +192,19 @@ class Database:
 
                     for row in tables.get("device", []):
                         common_address = row.get("common_address", "")
+                        serial_port = row.get("serial_port", "")
+                        baud_rate = row.get("baud_rate", "")
+                        parity = row.get("parity", "")
+                        data_bits = row.get("data_bits", "")
+                        stop_bits = row.get("stop_bits", "")
                         cursor.execute(
                             """
                             INSERT INTO devices(
                                 id, site_id, name, type, protocol, ip, port, unit_id,
-                                poll_interval_ms, common_address
+                                poll_interval_ms, common_address, serial_port, baud_rate,
+                                parity, data_bits, stop_bits
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 row.get("id", ""),
@@ -211,6 +217,11 @@ class Database:
                                 int(row.get("unit_id") or 0),
                                 int(row.get("poll_interval_ms") or 0),
                                 int(common_address) if str(common_address).strip() else None,
+                                str(serial_port or ""),
+                                int(baud_rate) if str(baud_rate).strip() else 9600,
+                                str(parity or "N"),
+                                int(data_bits) if str(data_bits).strip() else 8,
+                                int(stop_bits) if str(stop_bits).strip() else 1,
                             ),
                         )
 
@@ -392,8 +403,32 @@ class Database:
         for row in self.fetch_all("SELECT id, name, description FROM sites ORDER BY id"):
             tables["site"].append({"id": text(row.get("id")), "name": text(row.get("name")), "description": text(row.get("description"))})
 
-        for row in self.fetch_all("SELECT id, site_id, name, type, protocol, ip, port, unit_id, poll_interval_ms, common_address FROM devices ORDER BY id"):
-            tables["device"].append({key: text(row.get(key)) for key in ("id", "site_id", "name", "type", "protocol", "ip", "port", "unit_id", "poll_interval_ms", "common_address")})
+        for row in self.fetch_all(
+            "SELECT id, site_id, name, type, protocol, ip, port, unit_id, poll_interval_ms, "
+            "common_address, serial_port, baud_rate, parity, data_bits, stop_bits FROM devices ORDER BY id"
+        ):
+            tables["device"].append(
+                {
+                    key: text(row.get(key))
+                    for key in (
+                        "id",
+                        "site_id",
+                        "name",
+                        "type",
+                        "protocol",
+                        "ip",
+                        "port",
+                        "unit_id",
+                        "poll_interval_ms",
+                        "common_address",
+                        "serial_port",
+                        "baud_rate",
+                        "parity",
+                        "data_bits",
+                        "stop_bits",
+                    )
+                }
+            )
 
         for row in self.fetch_all("SELECT id, device_id, name, code, category, data_type, unit, writable FROM points ORDER BY category, id"):
             category = text(row.get("category"))
@@ -436,6 +471,30 @@ class Database:
             tables["topology_binding"].append({key: text(row.get(key)) for key in ("id", "target_type", "target_id", "point_id", "role", "label")})
 
         return tables
+
+    def list_point_metadata(self) -> List[Dict[str, Any]]:
+        rows = self.fetch_all(
+            """
+            SELECT p.id, p.device_id, p.name, p.category, p.unit, p.data_type, p.writable,
+                   d.protocol
+            FROM points p
+            JOIN devices d ON d.id = p.device_id
+            ORDER BY p.category, p.id
+            """
+        )
+        return [
+            {
+                "id": str(row.get("id") or ""),
+                "device_id": str(row.get("device_id") or ""),
+                "name": str(row.get("name") or ""),
+                "category": str(row.get("category") or ""),
+                "unit": str(row.get("unit") or ""),
+                "data_type": str(row.get("data_type") or ""),
+                "writable": bool(row.get("writable", False)),
+                "protocol": str(row.get("protocol") or ""),
+            }
+            for row in rows
+        ]
 
     def ensure_default_admin(self) -> None:
         username = (os.getenv("OPENEMS_ADMIN_USERNAME") or "admin").strip()
@@ -894,29 +953,6 @@ class Database:
             })
         return result
 
-    def mark_ingestion_progress(
-        self,
-        filename: str,
-        file_size: int,
-        line_count: int,
-        byte_offset: int = 0,
-    ) -> None:
-        """UPSERT ingestion progress for a JSONL file."""
-        self.execute(
-            """
-            INSERT INTO history_ingestion_progress(
-                filename, file_size, line_count, byte_offset, ingested_at
-            ) VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (filename)
-            DO UPDATE SET
-                file_size = EXCLUDED.file_size,
-                line_count = EXCLUDED.line_count,
-                byte_offset = EXCLUDED.byte_offset,
-                ingested_at = NOW()
-            """,
-            (filename, file_size, line_count, byte_offset),
-        )
-
     def query_history_multi(
         self,
         point_ids: List[str],
@@ -1045,10 +1081,3 @@ class Database:
             "count": len(buckets),
             "buckets": buckets,
         }
-
-    def get_ingested_files(self) -> Dict[str, Dict[str, Any]]:
-        """Return dict of filename -> {file_size, line_count, byte_offset} for all ingested files."""
-        rows = self.fetch_all(
-            "SELECT filename, file_size, line_count, byte_offset FROM history_ingestion_progress"
-        )
-        return {row["filename"]: row for row in rows}

@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: timescale/timescaledb:2.17.2-pg15
+    container_name: openems-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openems_admin
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - openems_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d openems_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  openems:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openems-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      OPENEMS_DB_URL: postgresql://postgres:postgres@postgres:5432/openems_admin
+      OPENEMS_ADMIN_USERNAME: admin
+      OPENEMS_WEB_PORT: 8080
+      OPENEMS_SYNC_CONFIG_ON_START: "1"
+      OPENEMS_ENABLE_MODBUS: "1"
+      OPENEMS_ENABLE_IEC104: "1"
+      OPENEMS_ENABLE_HISTORY: "1"
+      OPENEMS_ENABLE_ALARM: "1"
+    ports:
+      - "${OPENEMS_WEB_PORT:-8080}:8080"
+    volumes:
+      - openems_runtime_data:/opt/openems/install/runtime
+
+volumes:
+  openems_postgres_data:
+  openems_runtime_data:

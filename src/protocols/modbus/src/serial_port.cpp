@@ -231,7 +231,7 @@ common::VoidResult SerialPort::open() {
     ::close(fd);
     return common::VoidResult::Err(
         common::ErrorCode::SerialPortConfigFailed,
-        "tcgetattr failed: " + strerror(errno));
+        std::string("tcgetattr failed: ") + strerror(errno));
   }
 
   // 配置波特率
@@ -314,7 +314,7 @@ common::VoidResult SerialPort::open() {
     ::close(fd);
     return common::VoidResult::Err(
         common::ErrorCode::SerialPortConfigFailed,
-        "tcsetattr failed: " + strerror(errno));
+        std::string("tcsetattr failed: ") + strerror(errno));
   }
 
   tcflush(fd, TCIOFLUSH);
@@ -341,7 +341,7 @@ common::VoidResult SerialPort::write(const uint8_t* data, size_t len) {
   if (written < 0) {
     return common::VoidResult::Err(
         common::ErrorCode::SerialPortWriteFailed,
-        "write() failed: " + strerror(errno));
+        std::string("write() failed: ") + strerror(errno));
   }
   if (static_cast<size_t>(written) != len) {
     return common::VoidResult::Err(
@@ -383,7 +383,7 @@ common::Result<std::vector<uint8_t>> SerialPort::read_with_timeout(size_t min_by
     if (sel < 0) {
       return common::Result<std::vector<uint8_t>>::Err(
           common::ErrorCode::SerialPortReadFailed,
-          "select() failed: " + strerror(errno));
+          std::string("select() failed: ") + strerror(errno));
     }
     if (sel == 0) break;  // timeout
 
@@ -392,7 +392,7 @@ common::Result<std::vector<uint8_t>> SerialPort::read_with_timeout(size_t min_by
     if (n < 0) {
       return common::Result<std::vector<uint8_t>>::Err(
           common::ErrorCode::SerialPortReadFailed,
-          "read() failed: " + strerror(errno));
+          std::string("read() failed: ") + strerror(errno));
     }
     if (n == 0) break;  // inter-frame silence
     result.insert(result.end(), buf, buf + n);

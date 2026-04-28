@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+build
+build-*
+install
+runtime
+tools/downloads
+node_modules
+.vs
+.idea
+*.log
