@@ -85,6 +85,11 @@ if [ "${OPENEMS_ENABLE_ALARM:-1}" = "1" ]; then
   start_service alarm ./bin/openems-alarm "$SHM_NAME"
 fi
 
+if [ "${OPENEMS_ENABLE_STRATEGY:-0}" = "1" ]; then
+  log "Starting OpenEMS strategy engine..."
+  start_service strategy ./bin/openems-strategy-engine "$SHM_NAME"
+fi
+
 log "Starting OpenEMS admin portal on port $WEB_PORT..."
 start_service web python3 ./web/run_dashboard.py --port "$WEB_PORT"
 

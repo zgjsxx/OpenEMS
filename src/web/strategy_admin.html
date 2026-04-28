@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS Strategy Management</title>
+<link rel="stylesheet" href="/assets/admin.css">
+<style>
+  .status-ok { color: #22c55e; }
+  .status-warn { color: #eab308; }
+  .status-error { color: #ef4444; }
+  .strategy-card { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .strategy-card .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .strategy-card .header .name { font-size: 16px; font-weight: 600; }
+  .strategy-card .detail { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
+  .strategy-card .detail .kv { display: flex; gap: 4px; }
+  .strategy-card .detail .key { color: var(--muted); }
+  .strategy-card .detail .val { font-weight: 500; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+  .pill.enabled { background: #22c55e20; color: #22c55e; }
+  .pill.disabled { background: #6b728020; color: #6b7280; }
+  .pill.override { background: #ef444420; color: #ef4444; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+  .log-table th, .log-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  .log-table th { color: var(--muted); font-weight: 500; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tabs button { padding: 6px 16px; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; }
+  .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-meta">
+      <div>单站运维后台</div>
+      <div>实时、告警、配置、审计一体化</div>
+    </div>
+    <nav class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">配置管理</a>
+      <a class="nav-link" data-page="topology" href="/topology">拓扑管理</a>
+      <a class="nav-link" data-page="strategy" href="/strategy">策略管理</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </nav>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">策略管理</div>
+        <div class="page-subtitle">防逆流控制、SOC保护等自动策略的配置与运行状态</div>
+      </div>
+    </header>
+    <main class="page-content">
+      <div class="tabs">
+        <button class="active" data-tab="status">运行状态</button>
+        <button data-tab="logs">动作日志</button>
+        <button data-tab="config">策略配置</button>
+      </div>
+
+      <div id="tab-status">
+        <div id="strategy-list">加载中…</div>
+      </div>
+
+      <div id="tab-logs" style="display:none">
+        <div class="table-card">
+          <div class="table-card-header">
+            <div>
+              <div class="section-title">策略动作日志</div>
+              <div class="section-subtitle">最近 200 条策略下发、抑制和错误记录</div>
+            </div>
+            <button id="refresh-logs" class="button secondary">刷新</button>
+          </div>
+          <div class="table-card-body">
+            <div class="table-wrap">
+              <table class="log-table">
+                <thead>
+                  <tr>
+                    <th>时间</th><th>策略</th><th>类型</th><th>目标点位</th>
+                    <th>目标值</th><th>结果</th><th>抑制原因</th><th>详情</th>
+                  </tr>
+                </thead>
+                <tbody id="log-rows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-config" style="display:none">
+        <div id="strategy-config-list">加载中…</div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+(function() {
+  const role = sessionStorage.getItem('_role') || 'viewer';
+  const isAdmin = role === 'admin';
+  document.getElementById('current-username').textContent = sessionStorage.getItem('_username') || '-';
+  document.getElementById('current-role').textContent = '(' + role + ')';
+
+  // Tabs
+  document.querySelectorAll('.tabs button').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      var tab = btn.dataset.tab;
+      document.getElementById('tab-status').style.display = tab === 'status' ? '' : 'none';
+      document.getElementById('tab-logs').style.display = tab === 'logs' ? '' : 'none';
+      document.getElementById('tab-config').style.display = tab === 'config' ? '' : 'none';
+      if (tab === 'logs') loadLogs();
+      if (tab === 'config') loadConfig();
+      if (tab === 'status') loadStatus();
+    });
+  });
+
+  document.getElementById('refresh-logs').addEventListener('click', loadLogs);
+  document.getElementById('logout-btn').addEventListener('click', function() {
+    fetch('/api/auth/logout', { method: 'POST' }).then(function() { location.href = '/login'; });
+  });
+
+  // Highlight nav
+  document.querySelectorAll('.nav-link').forEach(function(a) { a.classList.remove('active'); });
+  var navLink = document.querySelector('.nav-link[data-page="strategy"]');
+  if (navLink) navLink.classList.add('active');
+
+  function loadStatus() {
+    fetch('/api/strategy/runtime')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var rows = data.rows || [];
+        if (rows.length === 0) {
+          document.getElementById('strategy-list').innerHTML =
+            '<div class="card"><div class="muted">暂无运行中的策略。</div></div>';
+          return;
+        }
+        var html = '';
+        rows.forEach(function(s) {
+          var now = new Date();
+          var overrideUntil = s.manual_override_until ? new Date(s.manual_override_until) : null;
+          var isOverridden = overrideUntil && overrideUntil > now;
+
+          html += '<div class="strategy-card">';
+          html += '<div class="header">';
+          html += '<span class="name">' + esc(s.name) + ' <span class="pill ' + (s.enabled ? 'enabled' : 'disabled') + '">' + (s.enabled ? '启用' : '禁用') + '</span></span>';
+          if (isOverridden) html += '<span class="pill override">人工接管至 ' + overrideUntil.toLocaleTimeString() + '</span>';
+          html += '</div>';
+          html += '<div class="detail">';
+          html += '<div class="kv"><span class="key">类型</span><span class="val">' + esc(s.type) + '</span></div>';
+          html += '<div class="kv"><span class="key">设备</span><span class="val">' + esc(s.device_id) + '</span></div>';
+          html += '<div class="kv"><span class="key">当前目标</span><span class="val">' + (s.current_target_value != null ? Number(s.current_target_value).toFixed(2) + ' kW' : '-') + '</span></div>';
+          html += '<div class="kv"><span class="key">最后执行</span><span class="val">' + (s.last_execution_time || '-') + '</span></div>';
+          html += '<div class="kv"><span class="key">抑制</span><span class="val ' + (s.suppressed ? 'status-warn' : 'status-ok') + '">' + (s.suppressed ? '是: ' + esc(s.suppress_reason) : '否') + '</span></div>';
+          html += '<div class="kv"><span class="key">错误</span><span class="val ' + (s.last_error ? 'status-error' : '') + '">' + (s.last_error || '无') + '</span></div>';
+          html += '<div class="kv"><span class="key">输入摘要</span><span class="val">' + esc(JSON.stringify(s.input_summary || {})) + '</span></div>';
+          html += '</div></div>';
+        });
+        document.getElementById('strategy-list').innerHTML = html;
+      });
+  }
+
+  function loadLogs() {
+    fetch('/api/strategy/logs?limit=200')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var rows = data.rows || [];
+        var html = '';
+        rows.forEach(function(l) {
+          html += '<tr>';
+          html += '<td>' + (l.created_at || '-') + '</td>';
+          html += '<td>' + esc(l.strategy_id) + '</td>';
+          html += '<td>' + esc(l.action_type) + '</td>';
+          html += '<td>' + esc(l.target_point_id || '-') + '</td>';
+          html += '<td>' + (l.desired_value != null ? Number(l.desired_value).toFixed(2) : '-') + '</td>';
+          html += '<td class="' + (l.result === 'ok' ? 'status-ok' : 'status-warn') + '">' + esc(l.result) + '</td>';
+          html += '<td>' + esc(l.suppress_reason || '-') + '</td>';
+          html += '<td>' + esc(l.details || '-') + '</td>';
+          html += '</tr>';
+        });
+        if (rows.length === 0) html = '<tr><td colspan="8" class="muted">暂无日志</td></tr>';
+        document.getElementById('log-rows').innerHTML = html;
+      });
+  }
+
+  function loadConfig() {
+    fetch('/api/strategy')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var rows = data.rows || [];
+        if (rows.length === 0) {
+          document.getElementById('strategy-config-list').innerHTML =
+            '<div class="card"><div class="muted">暂无策略配置。请在 strategy_definitions 表中添加策略。</div></div>';
+          return;
+        }
+        var html = '';
+        rows.forEach(function(s) {
+          html += '<div class="strategy-card">';
+          html += '<div class="header"><span class="name">' + esc(s.name) + ' <span class="pill ' + (s.enabled ? 'enabled' : 'disabled') + '">' + (s.enabled ? '启用' : '禁用') + '</span></span></div>';
+          html += '<div class="detail">';
+          html += '<div class="kv"><span class="key">ID</span><span class="val">' + esc(s.id) + '</span></div>';
+          html += '<div class="kv"><span class="key">类型</span><span class="val">' + esc(s.type) + '</span></div>';
+          html += '<div class="kv"><span class="key">设备</span><span class="val">' + esc(s.device_id) + '</span></div>';
+          html += '<div class="kv"><span class="key">优先级</span><span class="val">' + s.priority + '</span></div>';
+          html += '<div class="kv"><span class="key">周期</span><span class="val">' + s.cycle_ms + 'ms</span></div>';
+          html += '<div class="kv"><span class="key">绑定</span><span class="val">' + esc(JSON.stringify(s.bindings || [])) + '</span></div>';
+          html += '<div class="kv"><span class="key">参数</span><span class="val">' + esc(JSON.stringify(s.params || {})) + '</span></div>';
+          html += '</div></div>';
+        });
+        document.getElementById('strategy-config-list').innerHTML = html;
+      });
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  loadStatus();
+})();
+</script>
+</body>
+</html>

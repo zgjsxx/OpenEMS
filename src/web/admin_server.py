@@ -448,6 +448,37 @@ def _safe_audit(
         before_json=before_json,
         after_json=after_json,
         details=details,
+
+
+def _write_manual_override_for_point(point_id: str, duration_minutes: int = 30) -> None:
+    """When a user manually sends a command to a point, mark all strategies
+    targeting that point's device as manually overridden for the given duration."""
+    if not _db_ready():
+        return
+    try:
+        point_row = _db.fetch_one(
+            "SELECT device_id FROM points WHERE id = %s", (point_id,)
+        )
+        if not point_row:
+            return
+        device_id = point_row.get("device_id")
+        if not device_id:
+            return
+        strategies = _db.fetch_all(
+            "SELECT id FROM strategy_definitions WHERE device_id = %s AND enabled = TRUE",
+            (device_id,),
+        )
+        for s in strategies:
+            _db.execute(
+                "INSERT INTO strategy_runtime_state(strategy_id, manual_override_until) "
+                "VALUES (%s, NOW() + INTERVAL '%s minutes') "
+                "ON CONFLICT (strategy_id) DO UPDATE SET "
+                "manual_override_until = NOW() + INTERVAL '%s minutes', "
+                "updated_at = NOW()",
+                (s["id"], str(duration_minutes), str(duration_minutes)),
+            )
+    except Exception:
+        pass
     )
 
 
@@ -632,6 +663,13 @@ async def api_submit_command(request: Request, req: CommandRequest):
         after_json={"desired_value": req.desired_value},
         user=user,
     )
+
+    # Write manual override: strategies targeting this point's device pause for 30 min
+    try:
+        _write_manual_override_for_point(req.point_id)
+    except Exception:
+        pass
+
     return JSONResponse(result)
 
 
@@ -922,6 +960,155 @@ async def api_users_patch(request: Request, user_id: int, req: UserUpdateRequest
         return _json_error("Failed to update user.", 400)
     _safe_audit(request, action="user_update", resource_type="user", resource_id=str(user_id), result="success", before_json=before, after_json=updated, user=user)
     return JSONResponse({"ok": True, "user": updated})
+
+
+# ---- Strategy Management ----
+
+
+class StrategySaveRequest(BaseModel):
+    tables: Dict[str, Any]
+
+
+@app.get("/strategy", response_class=HTMLResponse)
+async def strategy_page(request: Request):
+    return _page_response(request, "strategy_admin.html")
+
+
+@app.get("/api/strategy")
+async def api_strategy_list(request: Request):
+    _session_user(request, "viewer")
+    _require_db()
+    rows = _db.fetch_all("""
+        SELECT sd.id, sd.name, sd.type, sd.enabled, sd.site_id, sd.device_id,
+               sd.priority, sd.cycle_ms
+        FROM strategy_definitions sd
+        ORDER BY sd.priority ASC, sd.id ASC
+    """)
+    for row in rows:
+        row["enabled"] = bool(row.get("enabled"))
+        bindings = _db.fetch_all(
+            "SELECT role, point_id FROM strategy_bindings WHERE strategy_id = %s",
+            (row["id"],),
+        )
+        row["bindings"] = [
+            {"role": b["role"], "point_id": b["point_id"]} for b in bindings
+        ]
+        params = _db.fetch_all(
+            "SELECT param_key, param_value FROM strategy_params WHERE strategy_id = %s",
+            (row["id"],),
+        )
+        row["params"] = {p["param_key"]: p["param_value"] for p in params}
+    return JSONResponse({"rows": rows, "count": len(rows)})
+
+
+@app.post("/api/strategy/save")
+async def api_strategy_save(request: Request, req: StrategySaveRequest):
+    user = _session_user(request, "admin")
+    _require_db()
+    tables = req.tables
+    errors = []
+    try:
+        # Save strategy_definitions
+        for row in tables.get("strategy_definitions", []):
+            sid = row.get("id", "")
+            if not sid:
+                errors.append("Missing strategy id")
+                continue
+            _db.execute("""
+                INSERT INTO strategy_definitions(id, name, type, enabled, site_id, device_id, priority, cycle_ms)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    type = EXCLUDED.type,
+                    enabled = EXCLUDED.enabled,
+                    site_id = EXCLUDED.site_id,
+                    device_id = EXCLUDED.device_id,
+                    priority = EXCLUDED.priority,
+                    cycle_ms = EXCLUDED.cycle_ms,
+                    updated_at = NOW()
+            """, (
+                sid, row.get("name", ""), row.get("type", ""),
+                row.get("enabled", True), row.get("site_id", ""),
+                row.get("device_id", ""), row.get("priority", 0),
+                row.get("cycle_ms", 1000),
+            ))
+
+        # Save bindings
+        for row in tables.get("strategy_bindings", []):
+            _db.execute("""
+                INSERT INTO strategy_bindings(id, strategy_id, role, point_id)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    strategy_id = EXCLUDED.strategy_id,
+                    role = EXCLUDED.role,
+                    point_id = EXCLUDED.point_id
+            """, (row.get("id", ""), row.get("strategy_id", ""),
+                  row.get("role", ""), row.get("point_id", "")))
+
+        # Save params
+        for row in tables.get("strategy_params", []):
+            _db.execute("""
+                INSERT INTO strategy_params(id, strategy_id, param_key, param_value)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    strategy_id = EXCLUDED.strategy_id,
+                    param_key = EXCLUDED.param_key,
+                    param_value = EXCLUDED.param_value
+            """, (row.get("id", ""), row.get("strategy_id", ""),
+                  row.get("param_key", ""), row.get("param_value", "")))
+    except Exception as exc:
+        errors.append(str(exc))
+
+    _safe_audit(request, action="strategy_save", resource_type="strategy_config",
+                resource_id="", result="failed" if errors else "success",
+                details="; ".join(errors) if errors else "", user=user)
+    if errors:
+        return _json_error("; ".join(errors), 400)
+    return JSONResponse({"ok": True, "message": "策略配置已保存，需要重启 openems-strategy-engine 使其生效。"})
+
+
+@app.get("/api/strategy/runtime")
+async def api_strategy_runtime(request: Request):
+    _session_user(request, "viewer")
+    _require_db()
+    rows = _db.fetch_all("""
+        SELECT rs.strategy_id, sd.name, sd.type, sd.enabled, sd.device_id,
+               rs.last_execution_time, rs.current_target_value,
+               rs.current_target_point_id, rs.suppressed, rs.suppress_reason,
+               rs.manual_override_until, rs.last_error, rs.input_summary,
+               rs.updated_at
+        FROM strategy_runtime_state rs
+        JOIN strategy_definitions sd ON sd.id = rs.strategy_id
+        ORDER BY sd.priority ASC
+    """)
+    for row in rows:
+        row["enabled"] = bool(row.get("enabled"))
+        row["suppressed"] = bool(row.get("suppressed"))
+        if row.get("last_execution_time"):
+            row["last_execution_time"] = str(row["last_execution_time"])
+        if row.get("manual_override_until"):
+            row["manual_override_until"] = str(row["manual_override_until"])
+        if row.get("updated_at"):
+            row["updated_at"] = str(row["updated_at"])
+    return JSONResponse({"rows": rows, "count": len(rows)})
+
+
+@app.get("/api/strategy/logs")
+async def api_strategy_logs(request: Request, limit: int = 200):
+    _session_user(request, "viewer")
+    _require_db()
+    rows = _db.fetch_all("""
+        SELECT id, strategy_id, action_type, target_point_id, desired_value,
+               result_value, suppress_reason, input_summary, result, details,
+               created_at
+        FROM strategy_action_logs
+        ORDER BY created_at DESC
+        LIMIT %s
+    """, (min(limit, 1000),))
+    for row in rows:
+        if row.get("created_at"):
+            row["created_at"] = str(row["created_at"])
+    return JSONResponse({"rows": rows, "count": len(rows)})
 
 
 @app.get("/api/audit")
