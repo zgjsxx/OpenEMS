@@ -33,6 +33,7 @@ services:
       OPENEMS_ENABLE_IEC104: "1"
       OPENEMS_ENABLE_HISTORY: "1"
       OPENEMS_ENABLE_ALARM: "1"
+      OPENEMS_ENABLE_STRATEGY: "1"
     ports:
       - "${OPENEMS_WEB_PORT:-8080}:8080"
     volumes:

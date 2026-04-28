@@ -448,6 +448,7 @@ def _safe_audit(
         before_json=before_json,
         after_json=after_json,
         details=details,
+    )
 
 
 def _write_manual_override_for_point(point_id: str, duration_minutes: int = 30) -> None:
@@ -479,7 +480,6 @@ def _write_manual_override_for_point(point_id: str, duration_minutes: int = 30) 
             )
     except Exception:
         pass
-    )
 
 
 @app.on_event("startup")
