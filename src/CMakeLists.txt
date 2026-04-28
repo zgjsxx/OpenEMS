@@ -1,0 +1,11 @@
+# src/CMakeLists.txt — coordination layer for all src sub-projects
+add_subdirectory(common)
+add_subdirectory(utils)
+add_subdirectory(model)
+add_subdirectory(protocols)
+add_subdirectory(config)
+add_subdirectory(devices)
+add_subdirectory(rt_data)
+add_subdirectory(rt_db)
+add_subdirectory(collector)
+add_subdirectory(services)
