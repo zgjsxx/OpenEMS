@@ -46,11 +46,14 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+LOG_DIR="${APP_ROOT}/runtime/logs"
+
 start_service() {
   local name="$1"
   shift
+  mkdir -p "$LOG_DIR"
   (
-    "$@" 2>&1 | sed -u "s/^/[$name] /"
+    "$@" 2>&1 | tee "$LOG_DIR/${name}.log" | sed -u "s/^/[$name] /"
   ) &
   PIDS+=("$!")
 }

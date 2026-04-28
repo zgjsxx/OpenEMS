@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenEMS System Monitor</title>
+<link rel="stylesheet" href="/assets/admin.css">
+<style>
+  .resource-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .resource-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+  .resource-card .rc-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .resource-card .rc-value { font-size: 24px; font-weight: 700; }
+  .resource-card .rc-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .proc-table, .log-view { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .proc-table th, .proc-table td, .log-view td { padding: 5px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  .proc-table th, .log-view th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--bg); }
+  .log-view { font-family: monospace; font-size: 12px; }
+  .log-view td { white-space: pre-wrap; word-break: break-all; }
+  .service-filter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .service-filter button { padding: 4px 14px; border: 1px solid var(--border); border-radius: 14px; background: transparent; cursor: pointer; font-size: 13px; }
+  .service-filter button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .flex-row { display: flex; justify-content: space-between; align-items: center; }
+  .bar-wrap { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .bar-ok { background: #22c55e; }
+  .bar-warn { background: #eab308; }
+  .bar-danger { background: #ef4444; }
+  .mono { font-family: monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="side-nav">
+    <a class="brand" href="/dashboard">OpenEMS</a>
+    <div class="nav-meta">
+      <div>单站运维后台</div>
+      <div>实时、告警、配置、审计一体化</div>
+    </div>
+    <nav class="nav-group">
+      <a class="nav-link" data-page="dashboard" href="/dashboard">首页看板</a>
+      <a class="nav-link" data-page="alarms" href="/alarms">告警管理</a>
+      <a class="nav-link" data-page="history" href="/history">历史查询</a>
+      <a class="nav-link" data-page="config" href="/config">配置概览</a>
+      <a class="nav-link" data-page="comm" href="/comm">配置管理</a>
+      <a class="nav-link" data-page="topology" href="/topology">拓扑管理</a>
+      <a class="nav-link" data-page="strategy" href="/strategy">策略管理</a>
+      <a class="nav-link" data-page="system" href="/system">系统监控</a>
+      <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
+      <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
+    </nav>
+    <div class="side-footer">
+      <div class="status-line">当前用户：<strong id="current-username">-</strong> <span id="current-role"></span></div>
+      <button id="logout-btn" class="secondary">退出登录</button>
+    </div>
+  </aside>
+  <div class="main-shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">系统监控</div>
+        <div class="page-subtitle">进程状态、资源占用与实时日志</div>
+      </div>
+      <button id="refresh-btn" class="button secondary" onclick="refreshAll()">刷新</button>
+    </header>
+    <main class="page-content">
+
+      <div class="resource-grid" id="resource-cards"></div>
+
+      <div class="split-grid">
+        <div class="table-card">
+          <div class="table-card-header">
+            <div><div class="section-title">进程列表</div><div class="section-subtitle">OpenEMS 相关进程资源占用</div></div>
+          </div>
+          <div class="table-card-body">
+            <div class="table-wrap" style="max-height:300px; overflow-y:auto">
+              <table class="proc-table">
+                <thead><tr><th>PID</th><th>名称</th><th>CPU%</th><th>内存%</th><th>RSS(MB)</th></tr></thead>
+                <tbody id="proc-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div class="table-card-header">
+            <div><div class="section-title">日志查看器</div><div class="section-subtitle" id="log-subtitle">选择一个服务查看实时日志</div></div>
+            <div class="flex-row" style="gap:8px">
+              <select id="line-select" style="padding:4px 8px; font-size:13px">
+                <option value="100">100行</option>
+                <option value="200" selected>200行</option>
+                <option value="500">500行</option>
+                <option value="1000">1000行</option>
+              </select>
+              <button class="button secondary" onclick="loadLogs()">刷新日志</button>
+            </div>
+          </div>
+          <div class="service-filter" id="service-filter"></div>
+          <div class="table-card-body">
+            <div class="table-wrap" style="max-height:400px; overflow-y:auto">
+              <table class="log-view"><tbody id="log-tbody"></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<script src="/assets/admin.js"></script>
+<script>
+(function() {
+  var role = sessionStorage.getItem('_role') || 'viewer';
+  document.getElementById('current-username').textContent = sessionStorage.getItem('_username') || '-';
+  document.getElementById('current-role').textContent = '(' + role + ')';
+
+  document.querySelectorAll('.nav-link').forEach(function(a) { a.classList.remove('active'); });
+  var navLink = document.querySelector('.nav-link[data-page="system"]');
+  if (navLink) navLink.classList.add('active');
+
+  document.getElementById('logout-btn').addEventListener('click', function() {
+    fetch('/api/auth/logout', { method: 'POST' }).then(function() { location.href = '/login'; });
+  });
+
+  function refreshAll() {
+    loadResources();
+    loadProcesses();
+    loadServices();
+  }
+
+  function loadResources() {
+    fetch('/api/system/resources')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var memUsed = d.mem_used_mb || 0;
+        var memTotal = d.mem_total_mb || 0;
+        var memPct = d.mem_used_percent || 0;
+        var memBar = memPct > 90 ? 'bar-danger' : memPct > 70 ? 'bar-warn' : 'bar-ok';
+
+        var uptime = '';
+        if (d.uptime_seconds) {
+          var s = parseInt(d.uptime_seconds);
+          var days = Math.floor(s / 86400);
+          var hrs = Math.floor((s % 86400) / 3600);
+          var mins = Math.floor((s % 3600) / 60);
+          uptime = days > 0 ? days + 'd ' + hrs + 'h' : hrs + 'h ' + mins + 'm';
+        }
+
+        var html = '';
+        html += card('CPU 负载', (d.load_1m || 0).toFixed(2), (d.load_5m||0).toFixed(2) + ' / ' + (d.load_15m||0).toFixed(2) + ' (1/5/15m)');
+        html += card('内存', memUsed + ' / ' + memTotal + ' MB', '<div class="bar-wrap"><div class="bar-fill ' + memBar + '" style="width:' + memPct + '%"></div></div><span style="font-size:12px">' + memPct + '%</span>');
+        html += card('磁盘', d.disk_used || '-', (d.disk_available || '-') + ' / ' + (d.disk_total || '-') + ' (' + (d.disk_use_percent || '-') + ')');
+        html += card('运行时间', uptime || '-', '');
+        document.getElementById('resource-cards').innerHTML = html;
+      });
+  }
+
+  function card(label, value, sub) {
+    return '<div class="resource-card"><div class="rc-label">' + esc(label) + '</div><div class="rc-value">' + esc(String(value)) + '</div><div class="rc-sub">' + (sub || '') + '</div></div>';
+  }
+
+  function loadProcesses() {
+    fetch('/api/system/processes')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var procs = d.processes || [];
+        procs.sort(function(a, b) { return b.rss_mb - a.rss_mb; });
+        var html = '';
+        procs.forEach(function(p) {
+          var cpuBar = p.cpu_percent > 50 ? 'bar-danger' : p.cpu_percent > 20 ? 'bar-warn' : 'bar-ok';
+          var memBar = p.mem_percent > 20 ? 'bar-danger' : p.mem_percent > 10 ? 'bar-warn' : 'bar-ok';
+          html += '<tr><td>' + p.pid + '</td><td>' + esc(p.name) + '</td>' +
+            '<td>' + p.cpu_percent.toFixed(1) + '</td>' +
+            '<td>' + p.mem_percent.toFixed(1) + '</td>' +
+            '<td>' + p.rss_mb.toFixed(1) + '</td></tr>';
+        });
+        if (procs.length === 0) html = '<tr><td colspan="5" class="muted">无法获取进程列表</td></tr>';
+        document.getElementById('proc-tbody').innerHTML = html;
+      });
+  }
+
+  var currentService = '';
+
+  function loadServices() {
+    fetch('/api/system/logs')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var svcs = d.services || [];
+        var html = '';
+        svcs.forEach(function(s) {
+          var active = s.name === currentService ? ' active' : '';
+          html += '<button class="' + active + '" onclick="selectService(\'' + esc(s.name) + '\')">' + esc(s.name) + '<br><small>' + formatSize(s.size_bytes) + '</small></button>';
+        });
+        document.getElementById('service-filter').innerHTML = html;
+        if (!currentService && svcs.length > 0) {
+          selectService(svcs[0].name);
+        }
+      });
+  }
+
+  function selectService(name) {
+    currentService = name;
+    document.querySelectorAll('.service-filter button').forEach(function(b) {
+      b.classList.toggle('active', b.textContent.indexOf(name) === 0);
+    });
+    document.getElementById('log-subtitle').textContent = '查看 ' + name + ' 日志';
+    loadLogs();
+  }
+
+  function loadLogs() {
+    if (!currentService) return;
+    var lines = document.getElementById('line-select').value || 200;
+    fetch('/api/system/logs?service=' + encodeURIComponent(currentService) + '&lines=' + lines)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var logLines = d.lines || [];
+        var html = '';
+        logLines.forEach(function(line) {
+          html += '<tr><td>' + esc(line) + '</td></tr>';
+        });
+        if (logLines.length === 0) html = '<tr><td class="muted">暂无日志</td></tr>';
+        document.getElementById('log-tbody').innerHTML = html;
+        // Auto-scroll to bottom
+        var wrap = document.querySelector('.log-view').closest('.table-wrap');
+        if (wrap) wrap.scrollTop = wrap.scrollHeight;
+      });
+  }
+
+  function formatSize(bytes) {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  refreshAll();
+  setInterval(refreshAll, 10000);
+})();
+</script>
+</body>
+</html>

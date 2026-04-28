@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1109,6 +1111,176 @@ async def api_strategy_logs(request: Request, limit: int = 200):
         if row.get("created_at"):
             row["created_at"] = str(row["created_at"])
     return JSONResponse({"rows": rows, "count": len(rows)})
+
+
+# ---- System Monitoring ----
+
+
+def _run_cmd(args: List[str], timeout: int = 5) -> str:
+    try:
+        return subprocess.check_output(args, timeout=timeout, stderr=subprocess.STDOUT).decode("utf-8", errors="replace")
+    except Exception as e:
+        return f"(error: {e})"
+
+
+def _parse_process_list() -> List[Dict[str, Any]]:
+    """Parse ps output to get process list with resource usage."""
+    procs = []
+    try:
+        out = subprocess.check_output(
+            ["ps", "-eo", "pid,ppid,%cpu,%mem,rss,comm", "--no-headers"],
+            timeout=5, stderr=subprocess.STDOUT
+        ).decode("utf-8", errors="replace")
+        for line in out.strip().split("\n"):
+            parts = line.split(None, 5)
+            if len(parts) >= 6:
+                pid = parts[0]
+                ppid = parts[1]
+                cpu = parts[2]
+                mem = parts[3]
+                rss_kb = parts[4]
+                comm = parts[5]
+                is_openems = any(
+                    prefix in comm
+                    for prefix in ["openems-", "python3", "uvicorn"]
+                )
+                if is_openems or int(pid or 0) < 50:
+                    mem_mb = float(rss_kb) / 1024.0 if rss_kb else 0.0
+                    procs.append({
+                        "pid": int(pid),
+                        "ppid": int(ppid),
+                        "cpu_percent": float(cpu),
+                        "mem_percent": float(mem),
+                        "rss_mb": round(mem_mb, 1),
+                        "name": comm,
+                    })
+    except Exception:
+        pass
+    return procs
+
+
+def _system_resources() -> Dict[str, Any]:
+    """Read /proc for system-level resource info."""
+    info: Dict[str, Any] = {}
+
+    # Memory
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    info["mem_total_kb"] = int(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    info["mem_available_kb"] = int(line.split()[1])
+    except Exception:
+        info["mem_total_kb"] = 0
+        info["mem_available_kb"] = 0
+
+    if info.get("mem_total_kb", 0) > 0:
+        info["mem_used_percent"] = round(
+            (1 - info["mem_available_kb"] / info["mem_total_kb"]) * 100, 1
+        )
+        info["mem_total_mb"] = round(info["mem_total_kb"] / 1024.0, 1)
+        info["mem_used_mb"] = round(
+            (info["mem_total_kb"] - info["mem_available_kb"]) / 1024.0, 1
+        )
+
+    # Load average
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().strip().split()
+            info["load_1m"] = float(parts[0])
+            info["load_5m"] = float(parts[1])
+            info["load_15m"] = float(parts[2])
+    except Exception:
+        pass
+
+    # Uptime
+    try:
+        with open("/proc/uptime") as f:
+            info["uptime_seconds"] = float(f.read().split()[0])
+    except Exception:
+        pass
+
+    # Disk
+    try:
+        out = subprocess.check_output(
+            ["df", "-h", "/opt/openems"], timeout=5, stderr=subprocess.STDOUT
+        ).decode("utf-8", errors="replace")
+        lines = out.strip().split("\n")
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            if len(parts) >= 6:
+                info["disk_total"] = parts[1]
+                info["disk_used"] = parts[2]
+                info["disk_available"] = parts[3]
+                info["disk_use_percent"] = parts[4]
+    except Exception:
+        pass
+
+    return info
+
+
+@app.get("/api/system/processes")
+async def api_system_processes(request: Request):
+    _session_user(request, "viewer")
+    return JSONResponse({
+        "processes": _parse_process_list(),
+        "count": len(_parse_process_list()),
+    })
+
+
+@app.get("/api/system/resources")
+async def api_system_resources(request: Request):
+    _session_user(request, "viewer")
+    return JSONResponse(_system_resources())
+
+
+@app.get("/api/system/logs")
+async def api_system_logs(request: Request, service: str = "", lines: int = 200):
+    _session_user(request, "viewer")
+    log_dir = Path(os.environ.get("APP_ROOT", "/opt/openems/install")) / "runtime" / "logs"
+    if not log_dir.exists():
+        return JSONResponse({"error": "Log directory not found"}, status_code=404)
+
+    if service:
+        log_path = log_dir / f"{service}.log"
+        if not log_path.exists():
+            return JSONResponse({"error": f"Log file not found: {service}.log"}, status_code=404)
+        try:
+            # Read last N lines efficiently
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                buf = b""
+                chunk_size = 4096
+                while len(buf.split(b"\n")) <= lines and size > 0:
+                    read_size = min(chunk_size, size)
+                    size -= read_size
+                    f.seek(size)
+                    buf = f.read(read_size) + buf
+                log_lines = buf.decode("utf-8", errors="replace").split("\n")
+                return JSONResponse({
+                    "service": service,
+                    "lines": log_lines[-lines:] if len(log_lines) > lines else log_lines,
+                })
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # List available services
+    services = []
+    for f in sorted(log_dir.glob("*.log")):
+        svc_name = f.stem
+        try:
+            fsize = f.stat().st_size
+            services.append({"name": svc_name, "size_bytes": fsize})
+        except Exception:
+            services.append({"name": svc_name, "size_bytes": 0})
+    return JSONResponse({"services": services})
+
+
+@app.get("/system", response_class=HTMLResponse)
+async def system_page(request: Request):
+    return _page_response(request, "system_admin.html")
 
 
 @app.get("/api/audit")
