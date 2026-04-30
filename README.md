@@ -56,7 +56,7 @@ CSV 保留为导入、导出、备份和离线兜底格式。
 
 ## RtDb Service 配置源
 
-`openems-rtdb-service` 默认从 PostgreSQL 结构化配置表读取运行必需配置：
+`openems-rtdb-service` 从 PostgreSQL 结构化配置表读取运行必需配置：
 
 - `sites`
 - `ems_config`
@@ -65,35 +65,33 @@ CSV 保留为导入、导出、备份和离线兜底格式。
 - `modbus_mappings`
 - `iec104_mappings`
 
-如果 PostgreSQL 不可用、`libpq` 运行库不存在或结构化配置读取失败，会自动回退到 CSV。
+运行时仅支持 PostgreSQL 配置源。如果 PostgreSQL 不可用或 `libpq` 运行库不存在，服务将启动失败。
 
 启动参数：
 
 ```text
-openems-rtdb-service [source] [config_path] [shm_name]
+openems-rtdb-service [shm_name]
 ```
 
 参数说明：
 
-- `source`：`postgresql` 或 `csv`，默认 `postgresql`
-- `config_path`：CSV 配置目录，默认 `config/tables`
 - `shm_name`：共享内存名称，默认使用平台内置值
 
 示例：
 
 ```powershell
-.\bin\openems-rtdb-service.exe postgresql config/tables
-.\bin\openems-rtdb-service.exe csv config/tables
+.\bin\openems-rtdb-service.exe
 ```
 
 Linux 示例：
 
 ```sh
-./bin/openems-rtdb-service postgresql config/tables
-./bin/openems-rtdb-service csv config/tables
+./bin/openems-rtdb-service
 ```
 
 ## CSV 导入导出
+
+CSV 保留为导入、导出、备份和离线兜底格式。
 
 安装目录下导入 CSV 到 PostgreSQL：
 
@@ -121,7 +119,7 @@ RtDb service 使用运行时动态加载 `libpq`。
 - Windows：`third_party/postgresql/windows/x64/bin/` 中放置 `libpq.dll` 及依赖 DLL，install 时会复制到 `install/bin`。
 - Linux：`third_party/postgresql/linux/x64/lib/` 中放置 `libpq.so*`，install 时会复制到 `install/lib`。
 
-如果运行库不可用，程序会打印 warning 并回退 CSV。
+如果运行库不可用，程序会打印 warning 并退出。
 ## Docker 部署
 
 仓库已提供：

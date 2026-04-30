@@ -13,8 +13,7 @@
 #else
   #include <sys/socket.h>
   #include <sys/select.h>
-  #include <netinet/in.h>
-  #include <arpa/inet.h>
+  #include <netdb.h>
   #include <unistd.h>
   #include <fcntl.h>
   #include <errno.h>
@@ -155,99 +154,113 @@ ModbusTcpClient::~ModbusTcpClient() {
 
 common::VoidResult ModbusTcpClient::do_connect() {
   ensure_wsa_init();
+  struct addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
 
-  SocketType fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd == SOCKET_INVALID) {
+  const std::string port_str = std::to_string(config_.port);
+  struct addrinfo* resolved = nullptr;
+  int gai = getaddrinfo(config_.ip.c_str(), port_str.c_str(), &hints, &resolved);
+  if (gai != 0 || !resolved) {
     return common::VoidResult::Err(
-        common::ErrorCode::ModbusConnectionFailed, "socket() failed");
+        common::ErrorCode::ModbusConnectionFailed,
+        "getaddrinfo() failed for " + config_.ip + ":" + port_str);
   }
 
-  // Use non-blocking connect with timeout to avoid Windows default ~21s SYN timeout
+  SocketType connected_fd = SOCKET_INVALID;
+  for (auto* ai = resolved; ai != nullptr; ai = ai->ai_next) {
+    SocketType fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd == SOCKET_INVALID) {
+      continue;
+    }
+
+    // Use non-blocking connect with timeout to avoid long OS defaults.
 #ifdef _WIN32
-  // Set socket to non-blocking for connect
-  u_long mode = 1;
-  ioctlsocket(fd, FIONBIO, &mode);
+    u_long mode = 1;
+    ioctlsocket(fd, FIONBIO, &mode);
 #else
-  int flags = fcntl(fd, F_GETFL, 0);
-  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 #endif
 
-  struct sockaddr_in addr;
-  std::memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(config_.port);
-  inet_pton(AF_INET, config_.ip.c_str(), &addr.sin_addr);
-
-  int ret = ::connect(fd, (struct sockaddr*)&addr, sizeof(addr));
-  if (ret != 0) {
+    int ret = ::connect(fd, ai->ai_addr, static_cast<int>(ai->ai_addrlen));
+    if (ret != 0) {
 #ifdef _WIN32
-    int err = WSAGetLastError();
-    bool in_progress = (err == WSAEWOULDBLOCK);
+      int err = WSAGetLastError();
+      bool in_progress = (err == WSAEWOULDBLOCK);
 #else
-    int err = errno;
-    bool in_progress = (err == EINPROGRESS);
+      int err = errno;
+      bool in_progress = (err == EINPROGRESS);
 #endif
 
-    if (!in_progress) {
-      CLOSE_SOCKET(fd);
-      return common::VoidResult::Err(
-          common::ErrorCode::ModbusConnectionFailed,
-          "connect() to " + config_.ip + ":" + std::to_string(config_.port) + " failed");
+      if (!in_progress) {
+        CLOSE_SOCKET(fd);
+        continue;
+      }
+
+      fd_set write_fds;
+      FD_ZERO(&write_fds);
+      FD_SET(fd, &write_fds);
+
+      struct timeval tv;
+      tv.tv_sec = config_.timeout_ms / 1000;
+      tv.tv_usec = (config_.timeout_ms % 1000) * 1000;
+
+      ret = select(static_cast<int>(fd) + 1, nullptr, &write_fds, nullptr, &tv);
+      if (ret <= 0) {
+        CLOSE_SOCKET(fd);
+        continue;
+      }
+
+      int sock_err = 0;
+#ifdef _WIN32
+      int len = sizeof(sock_err);
+#else
+      socklen_t len = sizeof(sock_err);
+#endif
+      getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sock_err), &len);
+      if (sock_err != 0) {
+        CLOSE_SOCKET(fd);
+        continue;
+      }
     }
 
-    // Wait for connection with timeout using select
-    fd_set write_fds;
-    FD_ZERO(&write_fds);
-    FD_SET(fd, &write_fds);
+    // Restore to blocking mode for normal I/O
+#ifdef _WIN32
+    mode = 0;
+    ioctlsocket(fd, FIONBIO, &mode);
+#else
+    fcntl(fd, F_SETFL, flags);
+#endif
 
-    struct timeval tv;
-    tv.tv_sec = config_.timeout_ms / 1000;
-    tv.tv_usec = (config_.timeout_ms % 1000) * 1000;
-
-    ret = select(static_cast<int>(fd) + 1, nullptr, &write_fds, nullptr, &tv);
-    if (ret <= 0) {
-      CLOSE_SOCKET(fd);
-      return common::VoidResult::Err(
-          common::ErrorCode::ModbusConnectionFailed,
-          "connect() timeout to " + config_.ip + ":" + std::to_string(config_.port));
-    }
-
-    // Check if connect actually succeeded
-    int sock_err = 0;
-    socklen_t len = sizeof(sock_err);
-    getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sock_err), &len);
-    if (sock_err != 0) {
-      CLOSE_SOCKET(fd);
-      return common::VoidResult::Err(
-          common::ErrorCode::ModbusConnectionFailed,
-          "connect() to " + config_.ip + ":" + std::to_string(config_.port) + " failed after select");
-    }
+    // Set I/O timeouts
+#ifdef _WIN32
+    DWORD tv_ms = static_cast<DWORD>(config_.timeout_ms);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_ms, sizeof(tv_ms));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_ms, sizeof(tv_ms));
+#else
+    struct timeval tv_io;
+    tv_io.tv_sec = config_.timeout_ms / 1000;
+    tv_io.tv_usec = (config_.timeout_ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv_io, sizeof(tv_io));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv_io, sizeof(tv_io));
+#endif
+    connected_fd = fd;
+    break;
   }
 
-  // Restore to blocking mode for normal I/O
-#ifdef _WIN32
-  mode = 0;
-  ioctlsocket(fd, FIONBIO, &mode);
-#else
-  fcntl(fd, F_SETFL, flags);
-#endif
+  freeaddrinfo(resolved);
 
-  // Set I/O timeouts
-#ifdef _WIN32
-  DWORD tv_ms = static_cast<DWORD>(config_.timeout_ms);
-  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_ms, sizeof(tv_ms));
-  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv_ms, sizeof(tv_ms));
-#else
-  struct timeval tv_io;
-  tv_io.tv_sec = config_.timeout_ms / 1000;
-  tv_io.tv_usec = (config_.timeout_ms % 1000) * 1000;
-  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv_io, sizeof(tv_io));
-  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv_io, sizeof(tv_io));
-#endif
+  if (connected_fd == SOCKET_INVALID) {
+    return common::VoidResult::Err(
+        common::ErrorCode::ModbusConnectionFailed,
+        "connect() to " + config_.ip + ":" + std::to_string(config_.port) + " failed");
+  }
 
   {
     std::lock_guard lock(socket_mutex_);
-    socket_fd_ = static_cast<int>(fd);
+    socket_fd_ = static_cast<int>(connected_fd);
   }
   connected_ = true;
 

@@ -9,7 +9,9 @@ public:
   AntiReverseFlow(StrategyDefinition def, StrategyParams params,
                   rt_db::RtDb* rtdb);
 
+  StrategyExecutionResult calculate_target();
   StrategyExecutionResult execute() override;
+  void mark_target_applied(double target_kw);
 
 private:
   core::PointHandle* grid_power_;

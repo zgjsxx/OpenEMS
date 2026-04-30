@@ -6,26 +6,53 @@
 <title>OpenEMS System Monitor</title>
 <link rel="stylesheet" href="/assets/admin.css">
 <style>
-  .resource-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .resource-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+  .resource-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .resource-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; background: rgba(15, 23, 42, 0.35); }
   .resource-card .rc-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .resource-card .rc-value { font-size: 24px; font-weight: 700; }
-  .resource-card .rc-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .resource-card .rc-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .proc-table, .log-view { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .proc-table th, .proc-table td, .log-view td { padding: 5px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  .proc-table th, .proc-table td, .log-view td { padding: 5px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
   .proc-table th, .log-view th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--bg); }
   .log-view { font-family: monospace; font-size: 12px; }
   .log-view td { white-space: pre-wrap; word-break: break-all; }
   .service-filter { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
-  .service-filter button { padding: 4px 14px; border: 1px solid var(--border); border-radius: 14px; background: transparent; cursor: pointer; font-size: 13px; }
+  .service-filter button { padding: 4px 14px; border: 1px solid var(--border); border-radius: 14px; background: transparent; cursor: pointer; font-size: 13px; color: var(--text); }
   .service-filter button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .service-filter button.is-empty { opacity: 0.65; }
   .flex-row { display: flex; justify-content: space-between; align-items: center; }
-  .bar-wrap { height: 6px; background: var(--border); border-radius: 3px; margin-top: 6px; overflow: hidden; }
-  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .service-name { font-weight: 600; }
+  .service-detail { color: var(--muted); font-size: 12px; margin-top: 3px; max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status-pill { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); }
+  .status-pill.running { color: #22c55e; background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.25); }
+  .status-pill.stopped { color: #f59e0b; background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.25); }
+  .action-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .mini-btn { border: 1px solid var(--border); border-radius: 8px; background: rgba(15, 23, 42, 0.5); color: var(--text); font-size: 12px; padding: 4px 8px; cursor: pointer; }
+  .mini-btn:hover { border-color: var(--accent); color: #fff; }
+  .mini-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+  .bar-wrap { height: 6px; background: var(--border); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
   .bar-ok { background: #22c55e; }
   .bar-warn { background: #eab308; }
   .bar-danger { background: #ef4444; }
-  .mono { font-family: monospace; font-size: 12px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 20px; }
+  .metric-card { background: rgba(32, 38, 50, 0.96); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); }
+  .metric-card-header { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .metric-card-title { font-size: 15px; font-weight: 700; }
+  .metric-card-value { font-size: 12px; color: var(--muted); }
+  .metric-chart { width: 100%; height: 180px; display: block; background: linear-gradient(180deg, rgba(59,130,246,0.08), rgba(59,130,246,0.01)); }
+  .metric-card-body { padding: 10px 14px 16px; }
+  .metric-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-swatch { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+  .legend-swatch.cpu { background: #38bdf8; }
+  .legend-swatch.mem { background: #22c55e; }
+  .legend-swatch.rx { background: #60a5fa; }
+  .legend-swatch.tx { background: #f59e0b; }
+  .update-note { color: var(--muted); font-size: 12px; }
+  @media (max-width: 1100px) {
+    .metric-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -57,51 +84,99 @@
     <header class="topbar">
       <div>
         <div class="page-title">系统监控</div>
-        <div class="page-subtitle">进程状态、资源占用与实时日志</div>
+        <div class="page-subtitle">进程状态、资源占用、网络带宽与实时日志</div>
       </div>
-      <button id="refresh-btn" class="button secondary" onclick="refreshAll()">刷新</button>
+      <div class="flex-row" style="gap: 12px;">
+        <span class="update-note" id="last-refresh-text">等待数据</span>
+        <button id="refresh-btn" class="button secondary">刷新</button>
+      </div>
     </header>
     <main class="page-content">
-
       <div class="resource-grid" id="resource-cards"></div>
+
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-card-header">
+            <div class="metric-card-title">CPU 曲线</div>
+            <div class="metric-card-value" id="cpu-metric-text">等待数据</div>
+          </div>
+          <svg class="metric-chart" id="cpu-chart" viewBox="0 0 520 180" preserveAspectRatio="none"></svg>
+          <div class="metric-card-body">
+            <div class="metric-legend">
+              <span class="legend-item"><span class="legend-swatch cpu"></span>CPU 使用率</span>
+            </div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-header">
+            <div class="metric-card-title">内存曲线</div>
+            <div class="metric-card-value" id="mem-metric-text">等待数据</div>
+          </div>
+          <svg class="metric-chart" id="mem-chart" viewBox="0 0 520 180" preserveAspectRatio="none"></svg>
+          <div class="metric-card-body">
+            <div class="metric-legend">
+              <span class="legend-item"><span class="legend-swatch mem"></span>内存使用率</span>
+            </div>
+          </div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-card-header">
+            <div class="metric-card-title">网络带宽</div>
+            <div class="metric-card-value" id="net-metric-text">等待数据</div>
+          </div>
+          <svg class="metric-chart" id="net-chart" viewBox="0 0 520 180" preserveAspectRatio="none"></svg>
+          <div class="metric-card-body">
+            <div class="metric-legend">
+              <span class="legend-item"><span class="legend-swatch rx"></span>下行</span>
+              <span class="legend-item"><span class="legend-swatch tx"></span>上行</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="split-grid">
         <div class="table-card">
           <div class="table-card-header">
-            <div><div class="section-title">进程列表</div><div class="section-subtitle">OpenEMS 相关进程资源占用</div></div>
+            <div>
+              <div class="section-title">进程列表</div>
+              <div class="section-subtitle">OpenEMS 服务状态与进程控制</div>
+            </div>
           </div>
           <div class="table-card-body">
-            <div class="table-wrap" style="max-height:300px; overflow-y:auto">
+            <div class="table-wrap" style="max-height: 340px; overflow-y: auto">
               <table class="proc-table">
-                <thead><tr><th>PID</th><th>名称</th><th>CPU%</th><th>内存%</th><th>RSS(MB)</th></tr></thead>
+                <thead><tr><th>PID</th><th>服务</th><th>状态</th><th>CPU%</th><th>内存%</th><th>RSS(MB)</th><th>操作</th></tr></thead>
                 <tbody id="proc-tbody"></tbody>
               </table>
             </div>
+            <div class="update-note" id="service-action-note" style="margin-top: 10px;">后台门户进程仅支持观察，不支持在页面内停止或重启自身。</div>
           </div>
         </div>
 
         <div class="table-card">
           <div class="table-card-header">
-            <div><div class="section-title">日志查看器</div><div class="section-subtitle" id="log-subtitle">选择一个服务查看实时日志</div></div>
-            <div class="flex-row" style="gap:8px">
-              <select id="line-select" style="padding:4px 8px; font-size:13px">
+            <div>
+              <div class="section-title">日志查看器</div>
+              <div class="section-subtitle" id="log-subtitle">选择一个服务查看实时日志</div>
+            </div>
+            <div class="flex-row" style="gap: 8px">
+              <select id="line-select" style="padding: 4px 8px; font-size: 13px">
                 <option value="100">100行</option>
                 <option value="200" selected>200行</option>
                 <option value="500">500行</option>
                 <option value="1000">1000行</option>
               </select>
-              <button class="button secondary" onclick="loadLogs()">刷新日志</button>
+              <button id="refresh-log-btn" class="button secondary">刷新日志</button>
             </div>
           </div>
           <div class="service-filter" id="service-filter"></div>
           <div class="table-card-body">
-            <div class="table-wrap" style="max-height:400px; overflow-y:auto">
+            <div class="table-wrap" style="max-height: 420px; overflow-y: auto">
               <table class="log-view"><tbody id="log-tbody"></tbody></table>
             </div>
           </div>
         </div>
       </div>
-
     </main>
   </div>
 </div>
@@ -109,9 +184,12 @@
 <script>
 (function() {
   var role = sessionStorage.getItem('_role') || 'viewer';
+  var currentService = '';
+  var historyLimit = 60;
+  var metricHistory = { cpu: [], mem: [], rx: [], tx: [] };
+
   document.getElementById('current-username').textContent = sessionStorage.getItem('_username') || '-';
   document.getElementById('current-role').textContent = '(' + role + ')';
-
   document.querySelectorAll('.nav-link').forEach(function(a) { a.classList.remove('active'); });
   var navLink = document.querySelector('.nav-link[data-page="system"]');
   if (navLink) navLink.classList.add('active');
@@ -119,37 +197,148 @@
   document.getElementById('logout-btn').addEventListener('click', function() {
     fetch('/api/auth/logout', { method: 'POST' }).then(function() { location.href = '/login'; });
   });
+  document.getElementById('refresh-btn').addEventListener('click', refreshAll);
+  document.getElementById('refresh-log-btn').addEventListener('click', loadLogs);
+  document.getElementById('service-filter').addEventListener('click', function(e) {
+    var btn = e.target.closest('button[data-service]');
+    if (!btn) return;
+    selectService(btn.getAttribute('data-service') || '');
+  });
+  document.getElementById('proc-tbody').addEventListener('click', function(e) {
+    var btn = e.target.closest('button[data-action][data-service]');
+    if (!btn || btn.disabled) return;
+    controlService(btn.getAttribute('data-service') || '', btn.getAttribute('data-action') || '');
+  });
 
   function refreshAll() {
     loadResources();
     loadProcesses();
     loadServices();
+    loadLogs();
+  }
+
+  function pushMetricSample(key, value) {
+    var list = metricHistory[key];
+    if (!list) return;
+    list.push(Number(value || 0));
+    if (list.length > historyLimit) list.shift();
+  }
+
+  function formatRate(bytesPerSecond) {
+    var value = Number(bytesPerSecond || 0);
+    if (value < 1024) return value.toFixed(0) + ' B/s';
+    if (value < 1048576) return (value / 1024).toFixed(1) + ' KB/s';
+    return (value / 1048576).toFixed(2) + ' MB/s';
+  }
+
+  function formatBytes(bytes) {
+    var value = Number(bytes || 0);
+    if (value < 1024) return value.toFixed(0) + ' B';
+    if (value < 1048576) return (value / 1024).toFixed(1) + ' KB';
+    if (value < 1073741824) return (value / 1048576).toFixed(1) + ' MB';
+    return (value / 1073741824).toFixed(2) + ' GB';
+  }
+
+  function formatTimestamp(value) {
+    if (!value) return '等待数据';
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return String(value);
+    return '上次刷新 ' + date.toLocaleTimeString();
+  }
+
+  function polylinePoints(values, width, height, maxValue) {
+    if (!values.length) return '';
+    var safeMax = Math.max(maxValue || 1, 1);
+    return values.map(function(v, idx) {
+      var x = values.length === 1 ? 0 : (idx * width / (values.length - 1));
+      var y = height - (Math.max(0, Number(v || 0)) / safeMax) * height;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+  }
+
+  function renderSingleChart(targetId, values, color, maxValue) {
+    var width = 520;
+    var height = 180;
+    var points = polylinePoints(values, width, height, maxValue);
+    var fillPoints = points ? ('0,' + height + ' ' + points + ' ' + width + ',' + height) : '';
+    var html = '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="rgba(15,23,42,0.35)"></rect>';
+    for (var i = 1; i <= 4; i++) {
+      var y = (height / 4) * i;
+      html += '<line x1="0" y1="' + y + '" x2="' + width + '" y2="' + y + '" stroke="rgba(148,163,184,0.12)" stroke-width="1"></line>';
+    }
+    if (fillPoints) {
+      html += '<polygon points="' + fillPoints + '" fill="' + color + '" opacity="0.12"></polygon>';
+      html += '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline>';
+    }
+    document.getElementById(targetId).innerHTML = html;
+  }
+
+  function renderDualChart(targetId, rxValues, txValues, rxColor, txColor, maxValue) {
+    var width = 520;
+    var height = 180;
+    var rxPoints = polylinePoints(rxValues, width, height, maxValue);
+    var txPoints = polylinePoints(txValues, width, height, maxValue);
+    var html = '<rect x="0" y="0" width="' + width + '" height="' + height + '" fill="rgba(15,23,42,0.35)"></rect>';
+    for (var i = 1; i <= 4; i++) {
+      var y = (height / 4) * i;
+      html += '<line x1="0" y1="' + y + '" x2="' + width + '" y2="' + y + '" stroke="rgba(148,163,184,0.12)" stroke-width="1"></line>';
+    }
+    if (rxPoints) html += '<polyline points="' + rxPoints + '" fill="none" stroke="' + rxColor + '" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline>';
+    if (txPoints) html += '<polyline points="' + txPoints + '" fill="none" stroke="' + txColor + '" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline>';
+    document.getElementById(targetId).innerHTML = html;
+  }
+
+  function renderCharts(d) {
+    var cpuValue = Number(d.cpu_percent || 0);
+    var memValue = Number(d.mem_used_percent || 0);
+    var rxValue = Number(d.net_rx_bps || 0);
+    var txValue = Number(d.net_tx_bps || 0);
+    pushMetricSample('cpu', cpuValue);
+    pushMetricSample('mem', memValue);
+    pushMetricSample('rx', rxValue);
+    pushMetricSample('tx', txValue);
+    renderSingleChart('cpu-chart', metricHistory.cpu, '#38bdf8', 100);
+    renderSingleChart('mem-chart', metricHistory.mem, '#22c55e', 100);
+    var netMax = Math.max(1, Math.max.apply(null, metricHistory.rx.concat(metricHistory.tx)));
+    renderDualChart('net-chart', metricHistory.rx, metricHistory.tx, '#60a5fa', '#f59e0b', netMax);
+    document.getElementById('cpu-metric-text').textContent = cpuValue.toFixed(1) + '%';
+    document.getElementById('mem-metric-text').textContent = memValue.toFixed(1) + '%';
+    document.getElementById('net-metric-text').textContent = '下行 ' + formatRate(rxValue) + ' / 上行 ' + formatRate(txValue);
   }
 
   function loadResources() {
     fetch('/api/system/resources')
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        var memUsed = d.mem_used_mb || 0;
-        var memTotal = d.mem_total_mb || 0;
-        var memPct = d.mem_used_percent || 0;
+        var cpuPct = Number(d.cpu_percent || 0);
+        var memUsed = Number(d.mem_used_mb || 0);
+        var memTotal = Number(d.mem_total_mb || 0);
+        var memPct = Number(d.mem_used_percent || 0);
         var memBar = memPct > 90 ? 'bar-danger' : memPct > 70 ? 'bar-warn' : 'bar-ok';
-
-        var uptime = '';
+        var netRx = Number(d.net_rx_bps || 0);
+        var netTx = Number(d.net_tx_bps || 0);
+        var netIfaces = d.net_interfaces || [];
+        var uptime = '-';
         if (d.uptime_seconds) {
-          var s = parseInt(d.uptime_seconds);
+          var s = parseInt(d.uptime_seconds, 10);
           var days = Math.floor(s / 86400);
           var hrs = Math.floor((s % 86400) / 3600);
           var mins = Math.floor((s % 3600) / 60);
           uptime = days > 0 ? days + 'd ' + hrs + 'h' : hrs + 'h ' + mins + 'm';
         }
-
         var html = '';
-        html += card('CPU 负载', (d.load_1m || 0).toFixed(2), (d.load_5m||0).toFixed(2) + ' / ' + (d.load_15m||0).toFixed(2) + ' (1/5/15m)');
-        html += card('内存', memUsed + ' / ' + memTotal + ' MB', '<div class="bar-wrap"><div class="bar-fill ' + memBar + '" style="width:' + memPct + '%"></div></div><span style="font-size:12px">' + memPct + '%</span>');
+        html += card('CPU 负载', cpuPct.toFixed(1) + '%', (d.load_1m || 0).toFixed(2) + ' / ' + (d.load_5m || 0).toFixed(2) + ' / ' + (d.load_15m || 0).toFixed(2) + ' (1/5/15m)');
+        html += card('内存', memUsed.toFixed(1) + ' / ' + memTotal.toFixed(1) + ' MB', '<div class="bar-wrap"><div class="bar-fill ' + memBar + '" style="width:' + memPct + '%"></div></div><span style="font-size:12px">' + memPct.toFixed(1) + '%</span>');
         html += card('磁盘', d.disk_used || '-', (d.disk_available || '-') + ' / ' + (d.disk_total || '-') + ' (' + (d.disk_use_percent || '-') + ')');
-        html += card('运行时间', uptime || '-', '');
+        html += card('网络下行', formatRate(netRx), formatBytes(d.net_rx_bytes || 0) + ' · ' + (netIfaces.join(', ') || '-'));
+        html += card('网络上行', formatRate(netTx), formatBytes(d.net_tx_bytes || 0) + ' · 接口数 ' + (d.net_interface_count || 0));
+        html += card('运行时间', uptime, '');
         document.getElementById('resource-cards').innerHTML = html;
+        document.getElementById('last-refresh-text').textContent = formatTimestamp(d.sample_time);
+        renderCharts(d);
+      })
+      .catch(function() {
+        document.getElementById('last-refresh-text').textContent = '资源刷新失败';
       });
   }
 
@@ -162,22 +351,58 @@
       .then(function(r) { return r.json(); })
       .then(function(d) {
         var procs = d.processes || [];
-        procs.sort(function(a, b) { return b.rss_mb - a.rss_mb; });
+        procs.sort(function(a, b) {
+          if ((a.status || '') !== (b.status || '')) return (a.status === 'running' ? -1 : 1);
+          return Number(b.rss_mb || 0) - Number(a.rss_mb || 0);
+        });
         var html = '';
         procs.forEach(function(p) {
-          var cpuBar = p.cpu_percent > 50 ? 'bar-danger' : p.cpu_percent > 20 ? 'bar-warn' : 'bar-ok';
-          var memBar = p.mem_percent > 20 ? 'bar-danger' : p.mem_percent > 10 ? 'bar-warn' : 'bar-ok';
-          html += '<tr><td>' + p.pid + '</td><td>' + esc(p.name) + '</td>' +
-            '<td>' + p.cpu_percent.toFixed(1) + '</td>' +
-            '<td>' + p.mem_percent.toFixed(1) + '</td>' +
-            '<td>' + p.rss_mb.toFixed(1) + '</td></tr>';
+          var statusClass = p.status === 'running' ? 'running' : 'stopped';
+          var nameCell = '<div class="service-name">' + esc(p.display_name || p.name) + '</div>' +
+            '<div class="service-detail" title="' + esc(p.cmdline || '') + '">' + esc(p.cmdline || '') + '</div>';
+          var actionCell = '<span class="muted">不可控</span>';
+          if (p.controllable) {
+            actionCell =
+              '<div class="action-row">' +
+              '<button class="mini-btn" data-action="start" data-service="' + esc(p.service) + '"' + (p.status === 'running' ? ' disabled' : '') + '>启动</button>' +
+              '<button class="mini-btn" data-action="stop" data-service="' + esc(p.service) + '"' + (p.status !== 'running' ? ' disabled' : '') + '>停止</button>' +
+              '<button class="mini-btn" data-action="restart" data-service="' + esc(p.service) + '"' + (p.status !== 'running' ? ' disabled' : '') + '>重启</button>' +
+              '</div>';
+          }
+          html += '<tr><td>' + (p.pid || '-') + '</td><td>' + nameCell + '</td>' +
+            '<td><span class="status-pill ' + statusClass + '">' + esc(p.status || 'unknown') + '</span></td>' +
+            '<td>' + Number(p.cpu_percent || 0).toFixed(1) + '</td>' +
+            '<td>' + Number(p.mem_percent || 0).toFixed(1) + '</td>' +
+            '<td>' + Number(p.rss_mb || 0).toFixed(1) + '</td>' +
+            '<td>' + actionCell + '</td></tr>';
         });
-        if (procs.length === 0) html = '<tr><td colspan="5" class="muted">无法获取进程列表</td></tr>';
+        if (procs.length === 0) html = '<tr><td colspan="7" class="muted">无法获取进程列表</td></tr>';
         document.getElementById('proc-tbody').innerHTML = html;
       });
   }
 
-  var currentService = '';
+  function controlService(service, action) {
+    if (!service || !action) return;
+    fetch('/api/system/services/' + encodeURIComponent(service) + '/' + encodeURIComponent(action), {
+      method: 'POST'
+    })
+      .then(function(r) {
+        return r.json().then(function(body) {
+          return { ok: r.ok, status: r.status, body: body };
+        });
+      })
+      .then(function(result) {
+        if (!result.ok) {
+          var msg = (result.body && (result.body.detail || result.body.error)) || ('Request failed: ' + result.status);
+          alert(msg);
+          return;
+        }
+        loadProcesses();
+        loadServices();
+        setTimeout(loadProcesses, 1200);
+        setTimeout(loadLogs, 1200);
+      });
+  }
 
   function loadServices() {
     fetch('/api/system/logs')
@@ -187,11 +412,16 @@
         var html = '';
         svcs.forEach(function(s) {
           var active = s.name === currentService ? ' active' : '';
-          html += '<button class="' + active + '" onclick="selectService(\'' + esc(s.name) + '\')">' + esc(s.name) + '<br><small>' + formatSize(s.size_bytes) + '</small></button>';
+          var empty = Number(s.size_bytes || 0) === 0 ? ' is-empty' : '';
+          html += '<button class="' + active + empty + '" data-service="' + esc(s.name) + '">' + esc(s.name) + '<br><small>' + formatSize(s.size_bytes) + '</small></button>';
         });
         document.getElementById('service-filter').innerHTML = html;
         if (!currentService && svcs.length > 0) {
           selectService(svcs[0].name);
+        } else if (currentService) {
+          document.querySelectorAll('.service-filter button').forEach(function(btn) {
+            btn.classList.toggle('active', btn.getAttribute('data-service') === currentService);
+          });
         }
       });
   }
@@ -199,7 +429,7 @@
   function selectService(name) {
     currentService = name;
     document.querySelectorAll('.service-filter button').forEach(function(b) {
-      b.classList.toggle('active', b.textContent.indexOf(name) === 0);
+      b.classList.toggle('active', b.getAttribute('data-service') === name);
     });
     document.getElementById('log-subtitle').textContent = '查看 ' + name + ' 日志';
     loadLogs();
@@ -218,7 +448,6 @@
         });
         if (logLines.length === 0) html = '<tr><td class="muted">暂无日志</td></tr>';
         document.getElementById('log-tbody').innerHTML = html;
-        // Auto-scroll to bottom
         var wrap = document.querySelector('.log-view').closest('.table-wrap');
         if (wrap) wrap.scrollTop = wrap.scrollHeight;
       });
@@ -232,12 +461,15 @@
   }
 
   function esc(s) {
-    if (!s) return '';
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   refreshAll();
-  setInterval(refreshAll, 10000);
+  setInterval(loadResources, 2000);
+  setInterval(loadProcesses, 5000);
+  setInterval(loadServices, 15000);
+  setInterval(loadLogs, 3000);
 })();
 </script>
 </body>

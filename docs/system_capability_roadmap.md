@@ -7,9 +7,9 @@
 OpenEMS 当前已经具备一个单站能源管理系统的基础形态：
 
 - C++ 进程负责采集、控制、实时数据、告警和历史采样。
-- Python FastAPI 后台负责登录、用户、配置、告警、历史、审计、实时看板和拓扑展示。
-- CSV 仍然是现场配置主数据源。
-- PostgreSQL 用于后台管理数据，例如用户、会话、告警处理状态和审计日志。
+- Python FastAPI 后台负责登录、用户、配置、告警、历史、审计、实时看板、拓扑展示、策略管理和系统监控。
+- PostgreSQL 是运行时配置主源，CSV 保留为导入、导出、备份和初始 bootstrap 格式。
+- PostgreSQL 同时承载后台管理数据（用户、会话、告警处理状态、审计日志）和运行时配置。
 - `install/` 目录已经作为推荐运行根目录，用于统一 `bin/`、`config/`、`runtime/` 和 `web/`。
 
 当前项目已经超过简单 demo 阶段，但仍处于“单站本地交付 + 运维后台成型”的阶段。后续重点应放在可交付性、可观测性、操作安全和现场配置体验上。
@@ -39,30 +39,31 @@ OpenEMS 当前已经具备一个单站能源管理系统的基础形态：
 
 ### 2.2 配置体系
 
-当前已经支持基于 CSV 的配置加载，主要配置位于 `config/tables/`：
+当前运行时配置主源为 PostgreSQL 结构化配置表，CSV 保留为导入、导出、备份和初始 bootstrap 格式：
 
-- `site.csv`
-- `device.csv`
-- `ems_config.csv`
-- `telemetry.csv`
-- `teleindication.csv`
-- `telecontrol.csv`
-- `teleadjust.csv`
-- `modbus_mapping.csv`
-- `iec104_mapping.csv`
-- `alarm_rule.csv`
-- `topology_node.csv`
-- `topology_link.csv`
-- `topology_binding.csv`
+- `site.csv` → `sites` 表
+- `device.csv` → `devices` 表
+- `ems_config.csv` → `ems_config` 表
+- `telemetry.csv` → `points` 表（遥测）
+- `teleindication.csv` → `points` 表（遥信）
+- `telecontrol.csv` → `points` 表（遥控）
+- `teleadjust.csv` → `points` 表（遥调）
+- `modbus_mapping.csv` → `modbus_mappings` 表
+- `iec104_mapping.csv` → `iec104_mappings` 表
+- `alarm_rule.csv` → `alarm_rules` 表
+- `topology_node.csv` → `topology_nodes` 表
+- `topology_link.csv` → `topology_links` 表
+- `topology_binding.csv` → `topology_bindings` 表
 
 当前已经支持的配置能力包括：
 
 - 站点、设备、点位、协议映射配置。
 - 遥测、遥信、遥控、遥调四类点表。
-- `device.csv` 整行 `#` 注释，用于调试时临时屏蔽设备。
-- Web“配置管理”页面在线查看、编辑、校验和保存 CSV。
+- `device.csv` 整行 `#` 注释，用于调试时临时屏蔽设备（仅 CSV 编辑时有效）。
+- Web `/comm` 页面在线查看、编辑、校验和保存 CSV。
+- Web `/config` 页面直接操作 PostgreSQL 结构化配置表。
 - 保存配置前自动备份到 `runtime/config_backups/`。
-- 配置保存后提示需要重启的相关 C++ 进程。
+- 配置保存后需要重启的相关 C++ 进程会提示；告警进程每 30 秒自动刷新规则。
 
 当前 Web 配置校验已经覆盖：
 
@@ -138,19 +139,18 @@ RtDb 是当前系统实时链路的核心。
 
 - `openems-alarm` 告警进程。
 - 从 RtDb 读取点位值。
-- 通过 `config/tables/alarm_rule.csv` 配置基础告警规则。
+- 从 PostgreSQL `alarm_rules` 表读取告警规则（每 30 秒自动刷新）。
 - 支持比较符 `<`、`<=`、`>`、`>=`、`==`、`!=`。
 - 支持等级 `info`、`warning`、`critical`。
-- 生成活动告警文件 `runtime/alarms_active.json`。
-- Web 告警页读取活动告警。
-- 告警同步到 PostgreSQL。
+- 活动告警直接同步到 PostgreSQL `alarm_events` 表。
+- Web 告警页从 PostgreSQL 读取活动告警。
 - 告警确认、消音。
 - 告警处理动作写入审计日志。
 
-当前 `alarm_rule.csv` 字段为：
+当前告警规则字段（PostgreSQL `alarm_rules` 表）：
 
-```csv
-id,point_id,enabled,operator,threshold,severity,message
+```text
+id, point_id, enabled, operator, threshold, severity, message
 ```
 
 当前暂不支持：
@@ -208,6 +208,8 @@ id,point_id,enabled,operator,threshold,severity,message
 - `/config`
 - `/comm`
 - `/topology`
+- `/strategy`
+- `/system`
 - `/users`
 - `/audit`
 
@@ -219,14 +221,34 @@ id,point_id,enabled,operator,threshold,severity,message
 - `/api/system/status`
 - `/api/snapshot`
 - `/api/command`
+- `/api/command/{point_id}`
 - `/api/alarms`
+- `/api/alarms/active`
+- `/api/alarms/{alarm_id}/ack`
+- `/api/alarms/{alarm_id}/silence`
 - `/api/history/points`
 - `/api/history/query`
+- `/api/history/query_multi`
+- `/api/history/query_aggregate`
 - `/api/config/overview`
+- `/api/config`
+- `/api/config-editor/schema`
+- `/api/config-editor/data`
+- `/api/config-editor/validate`
+- `/api/config-editor/save`
+- `/api/comm/schema`
 - `/api/comm/data`
 - `/api/comm/validate`
 - `/api/comm/save`
 - `/api/topology`
+- `/api/strategy`
+- `/api/strategy/save`
+- `/api/strategy/runtime`
+- `/api/strategy/logs`
+- `/api/system/processes`
+- `/api/system/resources`
+- `/api/system/logs`
+- `/api/system/services/{service}/{action}`
 - `/api/users`
 - `/api/audit`
 
@@ -258,9 +280,11 @@ id,point_id,enabled,operator,threshold,severity,message
 
 历史数据目前适合轻量查询和调试验证。随着点位数量和采样周期增加，JSONL 查询会遇到性能、压缩、归档和检索管理问题。
 
-### 3.3 配置仍以 CSV 为主
+### 3.3 配置已迁移到 PostgreSQL，CSV 编辑体验仍可改善
 
-Web 后台是 CSV 的可视化编辑层，不是数据库配置中心。配置保存后仍需要重启相关 C++ 进程才能完全生效。
+当前运行时配置主源已从 CSV 迁移到 PostgreSQL 结构化配置表。CSV 保留为导入、导出、备份格式。
+
+Web 后台提供 `/comm`（CSV 编辑）和 `/config`（结构化配置编辑）两种编辑入口。配置保存后部分 C++ 进程仍需要重启才能完全生效，但告警规则每 30 秒自动刷新。
 
 ### 3.4 进程管理仍是脚本级
 

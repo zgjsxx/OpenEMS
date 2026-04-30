@@ -1,0 +1,12 @@
+id,target_type,target_id,point_id,role,label
+pv-power,node,pv-001-node,pv-active-power,power,Active Power
+pv-voltage,node,pv-001-node,pv-voltage,voltage,Voltage
+pv-current,node,pv-001-node,pv-current,current,Current
+pv-status,node,pv-001-node,pv-running-status,status,Running Status
+bess-soc,node,bess-001-node,bess-soc,soc,SOC
+bess-power,node,bess-001-node,bess-active-power,power,Active Power
+bess-grid-state,node,bess-001-node,bess-grid-state,status,Grid State
+grid-power,node,grid-incomer,grid-active-power,power,Grid Power
+grid-frequency,node,grid-incomer,grid-frequency,voltage,Frequency
+grid-voltage,node,grid-incomer,grid-voltage,voltage,Voltage
+grid-switch,node,grid-breaker,grid-switch-position,status,Switch Position

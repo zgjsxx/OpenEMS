@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import os
+import signal
+import shutil
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +73,13 @@ _reader = ShmReader()
 _config_store = ConfigStore(CONFIG_DIR, backup_root=RUNTIME_DIR / "config_backups")
 _db = Database(MIGRATIONS_DIR)
 _db_state: Dict[str, Any] = {"ok": False, "error": "Database not initialized."}
+_system_metrics_cache: Dict[str, Any] = {
+    "cpu_total": None,
+    "cpu_idle": None,
+    "net_rx_bytes": None,
+    "net_tx_bytes": None,
+    "ts": None,
+}
 
 
 class LoginRequest(BaseModel):
@@ -103,6 +114,48 @@ POINT_TABLES = {
     "teleindication": "teleindication.csv",
     "telecontrol": "telecontrol.csv",
     "teleadjust": "teleadjust.csv",
+}
+
+LOG_DIR = RUNTIME_DIR / "logs"
+PID_DIR = RUNTIME_DIR / "pids"
+
+SERVICE_SPECS: Dict[str, Dict[str, Any]] = {
+    "rtdb": {
+        "display_name": "openems-rtdb-service",
+        "command": ["./bin/openems-rtdb-service", "postgresql"],
+        "controllable": True,
+    },
+    "modbus": {
+        "display_name": "openems-modbus-collector",
+        "command": ["./bin/openems-modbus-collector"],
+        "controllable": True,
+    },
+    "iec104": {
+        "display_name": "openems-iec104-collector",
+        "command": ["./bin/openems-iec104-collector"],
+        "controllable": True,
+    },
+    "history": {
+        "display_name": "openems-history",
+        "command": ["./bin/openems-history", "/openems_rt_db", "1000"],
+        "controllable": True,
+    },
+    "alarm": {
+        "display_name": "openems-alarm",
+        "command": ["./bin/openems-alarm", "/openems_rt_db"],
+        "controllable": True,
+    },
+    "strategy": {
+        "display_name": "openems-strategy-engine",
+        "command": ["./bin/openems-strategy-engine", "/openems_rt_db"],
+        "controllable": True,
+    },
+    "web": {
+        "display_name": "openems-admin-portal",
+        "command": ["python3", "./web/run_dashboard.py", "--port", os.environ.get("OPENEMS_WEB_PORT", "8080")],
+        "controllable": False,
+        "note": "当前后台进程不支持在页面内停止或重启自身。",
+    },
 }
 
 
@@ -189,6 +242,7 @@ def _page_response(request: Request, filename: str, required_role: str = "viewer
     return HTMLResponse((WEB_DIR / filename).read_text(encoding="utf-8"))
 
 
+logger = logging.getLogger("openems.admin")
 _ingest_logger = logging.getLogger("openems.ingestion")
 def _point_lookup() -> Dict[str, Dict[str, Any]]:
     _require_db()
@@ -1123,9 +1177,333 @@ def _run_cmd(args: List[str], timeout: int = 5) -> str:
         return f"(error: {e})"
 
 
+def _service_pid_path(service: str) -> Path:
+    return PID_DIR / f"{service}.pid"
+
+
+def _service_log_path(service: str) -> Path:
+    return LOG_DIR / f"{service}.log"
+
+
+def _service_note(service: str) -> str:
+    spec = SERVICE_SPECS.get(service, {})
+    return str(spec.get("note", ""))
+
+
+def _identify_service(comm: str, cmdline: str) -> Optional[str]:
+    command = (cmdline or "").lower()
+    name = (comm or "").lower()
+    if "run_dashboard.py" in command or "uvicorn" in command:
+        return "web"
+    if "openems-rtdb-service" in command or name.startswith("openems-rtdb"):
+        return "rtdb"
+    if "openems-modbus-collector" in command or name.startswith("openems-modbus"):
+        return "modbus"
+    if "openems-iec104-collector" in command or name.startswith("openems-iec104"):
+        return "iec104"
+    if "openems-history" in command or name.startswith("openems-history"):
+        return "history"
+    if "openems-alarm" in command or name.startswith("openems-alarm"):
+        return "alarm"
+    if "openems-strategy-engine" in command or name.startswith("openems-strateg"):
+        return "strategy"
+    return None
+
+
+def _service_display_name(service: Optional[str], comm: str, cmdline: str) -> str:
+    if service and service in SERVICE_SPECS:
+        return str(SERVICE_SPECS[service]["display_name"])
+    if cmdline:
+        first = cmdline.split()[0]
+        return Path(first).name or comm
+    return comm
+
+
+def _read_pidfile(service: str) -> Optional[int]:
+    path = _service_pid_path(service)
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _pid_exists(pid: Optional[int]) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _remove_pidfile(service: str) -> None:
+    try:
+        _service_pid_path(service).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _service_status(service: str) -> str:
+    pid = _read_pidfile(service)
+    if pid is not None and _pid_exists(pid):
+        return "running"
+    return "stopped"
+
+
+def _service_control_available() -> bool:
+    return os.name != "nt" and APP_ROOT.as_posix().startswith("/opt/openems")
+
+
+def _start_managed_service(service: str) -> Dict[str, Any]:
+    if service not in SERVICE_SPECS:
+        raise ValueError("Unknown service")
+    spec = SERVICE_SPECS[service]
+    if not spec.get("controllable", False):
+        raise RuntimeError(_service_note(service) or "Service control is not supported for this process.")
+    if _service_status(service) == "running":
+        logger.info("System service start skipped: %s already running", service)
+        return {"service": service, "status": "running", "message": "Service is already running."}
+
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = _service_log_path(service)
+    with open(log_path, "a", encoding="utf-8", errors="replace") as log_handle:
+        proc = subprocess.Popen(
+            spec["command"],
+            cwd=str(APP_ROOT),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+    _service_pid_path(service).write_text(str(proc.pid), encoding="utf-8")
+    logger.info("System service started: %s pid=%s command=%s", service, proc.pid, " ".join(spec["command"]))
+    return {"service": service, "status": "running", "pid": proc.pid}
+
+
+def _stop_managed_service(service: str) -> Dict[str, Any]:
+    if service not in SERVICE_SPECS:
+        raise ValueError("Unknown service")
+    spec = SERVICE_SPECS[service]
+    if not spec.get("controllable", False):
+        raise RuntimeError(_service_note(service) or "Service control is not supported for this process.")
+    pid = _read_pidfile(service)
+    if pid is None or not _pid_exists(pid):
+        _remove_pidfile(service)
+        logger.info("System service stop skipped: %s already stopped", service)
+        return {"service": service, "status": "stopped", "message": "Service is not running."}
+
+    logger.info("System service stopping: %s pid=%s", service, pid)
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not _pid_exists(pid):
+            _remove_pidfile(service)
+            logger.info("System service stopped: %s pid=%s", service, pid)
+            return {"service": service, "status": "stopped", "pid": pid}
+        time.sleep(0.2)
+    os.kill(pid, signal.SIGKILL)
+    _remove_pidfile(service)
+    logger.warning("System service force-killed: %s pid=%s", service, pid)
+    return {"service": service, "status": "stopped", "pid": pid, "forced": True}
+
+
+def _restart_managed_service(service: str) -> Dict[str, Any]:
+    logger.info("System service restarting: %s", service)
+    stop_result = _stop_managed_service(service)
+    start_result = _start_managed_service(service)
+    return {
+        "service": service,
+        "status": start_result.get("status", "running"),
+        "previous": stop_result,
+        "current": start_result,
+    }
+
+
+def _is_openems_process_name(label: str) -> bool:
+    value = (label or "").lower()
+    return any(
+        token in value
+        for token in ("openems", "uvicorn", "python")
+    )
+
+
+def _is_openems_process_identity(label: str) -> bool:
+    value = (label or "").lower()
+    return (
+        "/openems-" in value
+        or "run_dashboard.py" in value
+        or "uvicorn" in value
+        or "python" in value
+    )
+
+
+def _parse_linux_process_list_from_proc() -> List[Dict[str, Any]]:
+    procs: List[Dict[str, Any]] = []
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return procs
+
+    try:
+        mem_total_kb = 0.0
+        with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    mem_total_kb = float(line.split()[1])
+                    break
+        with open("/proc/uptime", "r", encoding="utf-8", errors="replace") as handle:
+            uptime_seconds = float(handle.read().split()[0])
+        clock_ticks = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        cpu_count = max(os.cpu_count() or 1, 1)
+    except Exception:
+        return procs
+
+    for entry in proc_root.iterdir():
+        if not entry.is_dir() or not entry.name.isdigit():
+            continue
+        try:
+            pid = int(entry.name)
+            comm = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+            cmdline = (entry / "cmdline").read_text(encoding="utf-8", errors="replace").replace("\x00", " ").strip()
+            identity = cmdline or comm
+            service = _identify_service(comm, cmdline)
+            if not (service or _is_openems_process_name(comm) or _is_openems_process_identity(identity)):
+                continue
+
+            stat_parts = (entry / "stat").read_text(encoding="utf-8", errors="replace").split()
+            if len(stat_parts) < 24:
+                continue
+            ppid = int(stat_parts[3])
+            utime = float(stat_parts[13])
+            stime = float(stat_parts[14])
+            rss_pages = float(stat_parts[23])
+
+            rss_bytes = rss_pages * page_size
+            rss_kb = rss_bytes / 1024.0
+            mem_mb = rss_bytes / (1024.0 * 1024.0)
+            mem_percent = (rss_kb / mem_total_kb * 100.0) if mem_total_kb > 0 else 0.0
+            cpu_seconds = (utime + stime) / float(clock_ticks)
+            cpu_percent = (
+                cpu_seconds / max(uptime_seconds, 1.0) * 100.0 / float(cpu_count)
+            )
+
+            procs.append(
+                {
+                    "pid": pid,
+                    "ppid": ppid,
+                    "cpu_percent": round(cpu_percent, 1),
+                    "mem_percent": round(mem_percent, 1),
+                    "rss_mb": round(mem_mb, 1),
+                    "name": _service_display_name(service, comm, cmdline),
+                    "short_name": comm,
+                    "service": service or "",
+                    "cmdline": cmdline,
+                    "status": "running",
+                }
+            )
+        except Exception:
+            continue
+    return procs
+
+
+def _parse_windows_process_list() -> List[Dict[str, Any]]:
+    procs: List[Dict[str, Any]] = []
+    try:
+        out = subprocess.check_output(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-Process | Select-Object Id,ProcessName,CPU,WS | ConvertTo-Json -Compress",
+            ],
+            timeout=5,
+            stderr=subprocess.STDOUT,
+        ).decode("utf-8", errors="replace")
+    except Exception:
+        try:
+            out = subprocess.check_output(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                timeout=5,
+                stderr=subprocess.STDOUT,
+            ).decode("utf-8", errors="replace")
+            for row in csv.reader(out.splitlines()):
+                if len(row) < 5:
+                    continue
+                image_name, pid_text, _session_name, _session_num, mem_usage = row[:5]
+                base_name = Path(image_name).stem
+                if not _is_openems_process_name(base_name):
+                    continue
+                try:
+                    pid = int(pid_text)
+                except ValueError:
+                    continue
+                mem_kb = float(mem_usage.replace(",", "").replace(" K", "").replace(" KB", "").strip() or "0")
+                service = _identify_service(base_name, image_name)
+                procs.append(
+                    {
+                        "pid": pid,
+                        "ppid": 0,
+                        "cpu_percent": 0.0,
+                        "mem_percent": 0.0,
+                        "rss_mb": round(mem_kb / 1024.0, 1),
+                        "name": _service_display_name(service, base_name, image_name),
+                        "short_name": base_name,
+                        "service": service or "",
+                        "cmdline": image_name,
+                        "status": "running",
+                    }
+                )
+        except Exception:
+            return procs
+        return procs
+
+    try:
+        import json
+
+        rows = json.loads(out)
+        if isinstance(rows, dict):
+            rows = [rows]
+        for row in rows or []:
+            name = str(row.get("ProcessName") or "")
+            if not _is_openems_process_name(name):
+                continue
+            rss_bytes = float(row.get("WS") or 0.0)
+            service = _identify_service(name, name)
+            procs.append(
+                {
+                    "pid": int(row.get("Id") or 0),
+                    "ppid": 0,
+                    "cpu_percent": 0.0,
+                    "mem_percent": 0.0,
+                    "rss_mb": round(rss_bytes / (1024.0 * 1024.0), 1),
+                    "name": _service_display_name(service, name, name),
+                    "short_name": name,
+                    "service": service or "",
+                    "cmdline": name,
+                    "status": "running",
+                }
+            )
+    except Exception:
+        return []
+    return procs
+
+
 def _parse_process_list() -> List[Dict[str, Any]]:
-    """Parse ps output to get process list with resource usage."""
-    procs = []
+    """Return OpenEMS-related processes across Windows and Linux containers."""
+    if sys.platform.startswith("win"):
+        return _parse_windows_process_list()
+
+    if Path("/proc").exists():
+        proc_procs = _parse_linux_process_list_from_proc()
+        if proc_procs:
+            return proc_procs
+
+    if shutil.which("ps") is None:
+        return []
+
+    procs: List[Dict[str, Any]] = []
     try:
         out = subprocess.check_output(
             ["ps", "-eo", "pid,ppid,%cpu,%mem,rss,comm", "--no-headers"],
@@ -1140,28 +1518,76 @@ def _parse_process_list() -> List[Dict[str, Any]]:
                 mem = parts[3]
                 rss_kb = parts[4]
                 comm = parts[5]
-                is_openems = any(
-                    prefix in comm
-                    for prefix in ["openems-", "python3", "uvicorn"]
-                )
-                if is_openems or int(pid or 0) < 50:
+                if _is_openems_process_name(comm):
                     mem_mb = float(rss_kb) / 1024.0 if rss_kb else 0.0
+                    service = _identify_service(comm, comm)
                     procs.append({
                         "pid": int(pid),
                         "ppid": int(ppid),
                         "cpu_percent": float(cpu),
                         "mem_percent": float(mem),
                         "rss_mb": round(mem_mb, 1),
-                        "name": comm,
+                        "name": _service_display_name(service, comm, comm),
+                        "short_name": comm,
+                        "service": service or "",
+                        "cmdline": comm,
+                        "status": "running",
                     })
     except Exception:
         pass
     return procs
 
 
+def _read_linux_cpu_times() -> Optional[Dict[str, float]]:
+    try:
+        with open("/proc/stat", "r", encoding="utf-8", errors="replace") as handle:
+            first = handle.readline().split()
+        if len(first) < 8 or first[0] != "cpu":
+            return None
+        values = [float(item) for item in first[1:]]
+        idle = values[3] + (values[4] if len(values) > 4 else 0.0)
+        total = sum(values)
+        return {"idle": idle, "total": total}
+    except Exception:
+        return None
+
+
+def _read_linux_network_counters() -> Optional[Dict[str, Any]]:
+    try:
+        rx_total = 0
+        tx_total = 0
+        interfaces: List[str] = []
+        with open("/proc/net/dev", "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle.readlines()[2:]:
+                if ":" not in line:
+                    continue
+                name, payload = line.split(":", 1)
+                iface = name.strip()
+                if not iface or iface == "lo":
+                    continue
+                parts = payload.split()
+                if len(parts) < 16:
+                    continue
+                rx_total += int(parts[0])
+                tx_total += int(parts[8])
+                interfaces.append(iface)
+        return {"rx_bytes": rx_total, "tx_bytes": tx_total, "interfaces": interfaces}
+    except Exception:
+        return None
+
+
 def _system_resources() -> Dict[str, Any]:
     """Read /proc for system-level resource info."""
-    info: Dict[str, Any] = {}
+    info: Dict[str, Any] = {
+        "cpu_percent": 0.0,
+        "net_rx_bytes": 0,
+        "net_tx_bytes": 0,
+        "net_rx_bps": 0.0,
+        "net_tx_bps": 0.0,
+        "net_interfaces": [],
+        "net_interface_count": 0,
+    }
+    now = time.time()
 
     # Memory
     try:
@@ -1184,6 +1610,18 @@ def _system_resources() -> Dict[str, Any]:
             (info["mem_total_kb"] - info["mem_available_kb"]) / 1024.0, 1
         )
 
+    cpu_times = _read_linux_cpu_times()
+    if cpu_times:
+        prev_total = _system_metrics_cache.get("cpu_total")
+        prev_idle = _system_metrics_cache.get("cpu_idle")
+        if prev_total is not None and prev_idle is not None:
+            total_delta = cpu_times["total"] - float(prev_total)
+            idle_delta = cpu_times["idle"] - float(prev_idle)
+            if total_delta > 0:
+                info["cpu_percent"] = round((1.0 - idle_delta / total_delta) * 100.0, 1)
+        _system_metrics_cache["cpu_total"] = cpu_times["total"]
+        _system_metrics_cache["cpu_idle"] = cpu_times["idle"]
+
     # Load average
     try:
         with open("/proc/loadavg") as f:
@@ -1201,10 +1639,32 @@ def _system_resources() -> Dict[str, Any]:
     except Exception:
         pass
 
+    net = _read_linux_network_counters()
+    previous_ts = _system_metrics_cache.get("ts")
+    if net:
+        info["net_rx_bytes"] = net["rx_bytes"]
+        info["net_tx_bytes"] = net["tx_bytes"]
+        info["net_interfaces"] = net["interfaces"]
+        info["net_interface_count"] = len(net["interfaces"])
+        prev_rx = _system_metrics_cache.get("net_rx_bytes")
+        prev_tx = _system_metrics_cache.get("net_tx_bytes")
+        if (
+            previous_ts is not None
+            and prev_rx is not None
+            and prev_tx is not None
+            and now > float(previous_ts)
+        ):
+            dt = now - float(previous_ts)
+            info["net_rx_bps"] = max(0.0, (net["rx_bytes"] - float(prev_rx)) / dt)
+            info["net_tx_bps"] = max(0.0, (net["tx_bytes"] - float(prev_tx)) / dt)
+        _system_metrics_cache["net_rx_bytes"] = net["rx_bytes"]
+        _system_metrics_cache["net_tx_bytes"] = net["tx_bytes"]
+
     # Disk
     try:
+        disk_target = "/opt/openems" if Path("/opt/openems").exists() else str(APP_ROOT)
         out = subprocess.check_output(
-            ["df", "-h", "/opt/openems"], timeout=5, stderr=subprocess.STDOUT
+            ["df", "-h", disk_target], timeout=5, stderr=subprocess.STDOUT
         ).decode("utf-8", errors="replace")
         lines = out.strip().split("\n")
         if len(lines) >= 2:
@@ -1217,15 +1677,69 @@ def _system_resources() -> Dict[str, Any]:
     except Exception:
         pass
 
+    _system_metrics_cache["ts"] = now
+    info["sample_time"] = datetime.now(timezone.utc).isoformat()
     return info
+
+
+def _managed_service_rows() -> List[Dict[str, Any]]:
+    running = _parse_process_list()
+    by_service: Dict[str, Dict[str, Any]] = {}
+    for proc in running:
+        service = str(proc.get("service") or "")
+        if service:
+            by_service[service] = proc
+
+    rows: List[Dict[str, Any]] = []
+    for service, spec in SERVICE_SPECS.items():
+        proc = by_service.get(service)
+        pid = _read_pidfile(service)
+        if proc:
+            rows.append(
+                {
+                    "service": service,
+                    "display_name": proc.get("name") or spec["display_name"],
+                    "name": proc.get("name") or spec["display_name"],
+                    "short_name": proc.get("short_name") or spec["display_name"],
+                    "pid": proc.get("pid"),
+                    "ppid": proc.get("ppid", 0),
+                    "cpu_percent": float(proc.get("cpu_percent") or 0.0),
+                    "mem_percent": float(proc.get("mem_percent") or 0.0),
+                    "rss_mb": float(proc.get("rss_mb") or 0.0),
+                    "cmdline": proc.get("cmdline") or " ".join(spec["command"]),
+                    "status": "running",
+                    "controllable": bool(spec.get("controllable", False) and _service_control_available()),
+                    "note": _service_note(service),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "service": service,
+                    "display_name": spec["display_name"],
+                    "name": spec["display_name"],
+                    "short_name": spec["display_name"],
+                    "pid": pid or 0,
+                    "ppid": 0,
+                    "cpu_percent": 0.0,
+                    "mem_percent": 0.0,
+                    "rss_mb": 0.0,
+                    "cmdline": " ".join(spec["command"]),
+                    "status": _service_status(service),
+                    "controllable": bool(spec.get("controllable", False) and _service_control_available()),
+                    "note": _service_note(service),
+                }
+            )
+    return rows
 
 
 @app.get("/api/system/processes")
 async def api_system_processes(request: Request):
     _session_user(request, "viewer")
+    processes = _managed_service_rows()
     return JSONResponse({
-        "processes": _parse_process_list(),
-        "count": len(_parse_process_list()),
+        "processes": processes,
+        "count": len(processes),
     })
 
 
@@ -1276,6 +1790,49 @@ async def api_system_logs(request: Request, service: str = "", lines: int = 200)
         except Exception:
             services.append({"name": svc_name, "size_bytes": 0})
     return JSONResponse({"services": services})
+
+
+@app.post("/api/system/services/{service}/{action}")
+async def api_system_service_action(request: Request, service: str, action: str):
+    user = _session_user(request, "admin")
+    service = service.strip().lower()
+    action = action.strip().lower()
+    if service not in SERVICE_SPECS:
+        raise HTTPException(status_code=404, detail="Unknown service.")
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(status_code=400, detail="Unsupported action.")
+    if not _service_control_available():
+        raise HTTPException(status_code=400, detail="Service control is only supported in the Linux install/container runtime.")
+    logger.info("System service action requested: service=%s action=%s user=%s", service, action, user.get("username"))
+    try:
+        if action == "start":
+            result = _start_managed_service(service)
+        elif action == "stop":
+            result = _stop_managed_service(service)
+        else:
+            result = _restart_managed_service(service)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("System service action failed: service=%s action=%s", service, action)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        _safe_audit(
+            request,
+            action=f"system_service_{action}",
+            resource_type="system_service",
+            resource_id=service,
+            result="success",
+            after_json=result,
+            user=user,
+        )
+    except Exception:
+        logger.exception("Failed to write audit log for system service action: %s %s", service, action)
+    logger.info("System service action completed: service=%s action=%s result=%s", service, action, result)
+    return JSONResponse({"ok": True, "result": result})
 
 
 @app.get("/system", response_class=HTMLResponse)

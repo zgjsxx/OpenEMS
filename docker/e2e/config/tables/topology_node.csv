@@ -1,0 +1,7 @@
+id,site_id,name,type,device_id,x,y,enabled
+grid-incomer,site-demo-001,External Grid,grid,grid-001,80,180,true
+grid-breaker,site-demo-001,Grid Breaker,breaker,grid-001,220,180,true
+main-bus,site-demo-001,Main AC Bus,bus,,380,180,true
+pv-001-node,site-demo-001,PV Inverter #1,pv,pv-001,560,90,true
+bess-001-node,site-demo-001,BESS #1,bess,bess-001,560,180,true
+load-001-node,site-demo-001,Site Load,load,,560,270,true

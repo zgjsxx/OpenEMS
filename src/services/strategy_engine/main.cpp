@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <iomanip>
@@ -68,6 +69,37 @@ static std::string double_to_string(double value) {
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(4) << value;
   return oss.str();
+}
+
+static std::string json_escape(const std::string& value) {
+  std::string result;
+  result.reserve(value.size() + 8);
+  for (char ch : value) {
+    switch (ch) {
+      case '\\': result += "\\\\"; break;
+      case '"': result += "\\\""; break;
+      case '\b': result += "\\b"; break;
+      case '\f': result += "\\f"; break;
+      case '\n': result += "\\n"; break;
+      case '\r': result += "\\r"; break;
+      case '\t': result += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          std::ostringstream hex;
+          hex << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+              << static_cast<int>(static_cast<unsigned char>(ch));
+          result += hex.str();
+        } else {
+          result += ch;
+        }
+        break;
+    }
+  }
+  return result;
+}
+
+static std::string json_summary_literal(const std::string& summary) {
+  return "'{\"summary\":\"" + json_escape(summary) + "\"}'::jsonb";
 }
 
 static bool connect_db(DbContext& db) {
@@ -294,7 +326,7 @@ static void write_action_log(DbContext& db,
       << double_to_string(desired_value) << ","
       << double_to_string(result_value) << ","
       << "'" << sql_escape(suppress_reason) << "',"
-      << "'" << sql_escape(input_summary) << "',"
+      << json_summary_literal(input_summary) << ","
       << "'" << sql_escape(result_status) << "',"
       << "'" << sql_escape(details) << "'"
       << ")";
@@ -323,7 +355,7 @@ static void update_runtime_state(DbContext& db,
       << (suppressed ? "TRUE" : "FALSE") << ","
       << "'" << sql_escape(suppress_reason) << "',"
       << "'" << sql_escape(error) << "',"
-      << "'" << sql_escape(input_summary) << "',"
+      << json_summary_literal(input_summary) << ","
       << "NOW()"
       << ") ON CONFLICT (strategy_id) DO UPDATE SET "
       << "last_execution_time = EXCLUDED.last_execution_time, "
@@ -384,7 +416,11 @@ int main(int argc, char* argv[]) {
   load_manual_overrides(db, manual_overrides);
 
   int reload_counter = 0;
-  const int kReloadInterval = 30;  // reload config every N cycles
+  int reload_interval = 30;
+  if (const char* env_reload = std::getenv("OPENEMS_STRATEGY_RELOAD_INTERVAL")) {
+    int parsed = std::atoi(env_reload);
+    if (parsed > 0) reload_interval = parsed;
+  }
 
   OPENEMS_LOG_I("StrategyEngine", "Running. Cycle interval: 1000ms");
 
@@ -392,7 +428,7 @@ int main(int argc, char* argv[]) {
     uint64_t cycle_start = now_ms();
 
     // Periodically reload config from DB
-    if (reload_counter % kReloadInterval == 0) {
+    if (reload_counter % reload_interval == 0) {
       strategies = load_strategies(db, rt_db);
       load_manual_overrides(db, manual_overrides);
     }
@@ -442,43 +478,43 @@ int main(int argc, char* argv[]) {
       final_suppress_reason =
           "manual override active for device: " + override_device;
     } else {
-      // Step 1: Anti-reverse-flow calculates target
+      std::string arf_setpoint_id;
+
+      auto submit_final_target = [&](const std::string& point_id,
+                                     double target_kw) -> std::pair<bool, std::string> {
+        if (point_id.empty()) {
+          return {false, "bess_power_setpoint binding not configured"};
+        }
+        openems::core::CommandHandle final_handle(point_id, rt_db, 0.1, 0.1);
+        auto submit_result = final_handle.submit(target_kw);
+        if (!submit_result.is_ok()) {
+          return {false, "command submit failed: " + submit_result.error_msg()};
+        }
+        return {submit_result.value() == "submitted", submit_result.value()};
+      };
+
+      // Step 1: Anti-reverse-flow calculates target only.
       if (arf) {
-        auto arf_result = arf->execute();
+        auto arf_result = arf->calculate_target();
 
         input_summary << "ARF:target=" << double_to_string(arf_result.target_power_kw);
 
+        final_target = arf_result.target_power_kw;
+        final_suppressed = arf_result.suppressed;
+        final_suppress_reason = arf_result.suppress_reason;
+
+        for (const auto& b : arf->definition().bindings) {
+          if (b.role == "bess_power_setpoint") arf_setpoint_id = b.point_id;
+        }
+
         if (arf_result.suppressed) {
           input_summary << ",suppressed=" << arf_result.suppress_reason;
-        } else {
-          input_summary << ",sent=" << (arf_result.command_sent ? "1" : "0");
-          input_summary << ",cmd=" << arf_result.command_result;
         }
-
-        final_target = arf_result.target_power_kw;
-
-        // Write state and log
-        std::string setpoint_id;
-        for (const auto& b : arf->definition().bindings) {
-          if (b.role == "bess_power_setpoint") setpoint_id = b.point_id;
-        }
-        update_runtime_state(db, arf->definition().id,
-                             arf_result.target_power_kw, setpoint_id,
-                             arf_result.suppressed,
-                             arf_result.suppress_reason,
-                             input_summary.str(), "");
-        write_action_log(db, arf->definition().id,
-                         arf_result.command_sent ? "command" : "suppress",
-                         setpoint_id,
-                         arf_result.target_power_kw, 0.0,
-                         arf_result.suppress_reason,
-                         input_summary.str(),
-                         arf_result.command_sent ? "ok" : "suppressed",
-                         arf_result.command_result);
       }
 
-      // Step 2: SOC protection clamps the target
+      // Step 2: SOC protection clamps the target before any command is sent.
       if (soc && arf) {
+        double arf_target = final_target;
         auto clamp = soc->clamp(final_target);
         input_summary << " | SOC:clamped=" << double_to_string(clamp.clamped_kw);
 
@@ -487,30 +523,79 @@ int main(int argc, char* argv[]) {
           final_target = clamp.clamped_kw;
           final_suppressed = true;
           final_suppress_reason = clamp.reason;
-
-          // Re-submit the clamped target if it changed
-          std::string setpoint_id;
-          for (const auto& b : soc->definition().bindings) {
-            if (b.role == "bess_power_setpoint") setpoint_id = b.point_id;
-          }
-
-          // Only write if SOC actually changed the target
-          if (clamp.clamped_kw != final_target) {
-            update_runtime_state(db, soc->definition().id,
-                                 clamp.clamped_kw, setpoint_id,
-                                 clamp.suppressed, clamp.reason,
-                                 input_summary.str(), "");
-            write_action_log(db, soc->definition().id,
-                             "suppress", setpoint_id,
-                             clamp.clamped_kw, 0.0, clamp.reason,
-                             input_summary.str(), "suppressed", "");
-          }
-        } else {
-          update_runtime_state(db, soc->definition().id,
-                               final_target, "",
-                               false, "SOC in normal range",
-                               input_summary.str(), "");
         }
+      }
+
+      if (arf) {
+        auto [submitted, submit_message] = submit_final_target(arf_setpoint_id, final_target);
+        if (submitted) {
+          input_summary << ",sent=1,cmd=" << submit_message;
+        } else {
+          input_summary << ",sent=0,cmd=" << submit_message;
+          if (!final_suppressed) {
+            final_suppressed = true;
+            final_suppress_reason = submit_message;
+          }
+        }
+
+        arf->mark_target_applied(final_target);
+        update_runtime_state(db, arf->definition().id,
+                             final_target, arf_setpoint_id,
+                             final_suppressed,
+                             final_suppress_reason,
+                             input_summary.str(), "");
+        write_action_log(db, arf->definition().id,
+                         submitted ? "command" : "suppress",
+                         arf_setpoint_id,
+                         final_target, 0.0,
+                         final_suppress_reason,
+                         input_summary.str(),
+                         submitted ? "ok" : "suppressed",
+                         submit_message);
+
+        if (soc) {
+          update_runtime_state(db, soc->definition().id,
+                               final_target, arf_setpoint_id,
+                               final_suppressed,
+                               final_suppress_reason.empty() ? "SOC in normal range" : final_suppress_reason,
+                               input_summary.str(), "");
+          write_action_log(db, soc->definition().id,
+                           submitted ? "command" : "suppress",
+                           arf_setpoint_id,
+                           final_target, 0.0,
+                           final_suppress_reason,
+                           input_summary.str(),
+                           submitted ? "ok" : "suppressed",
+                           submit_message);
+        }
+      } else if (soc) {
+        auto soc_result = soc->execute();
+        std::string setpoint_id;
+        for (const auto& b : soc->definition().bindings) {
+          if (b.role == "bess_power_setpoint") {
+            setpoint_id = b.point_id;
+            break;
+          }
+        }
+        final_target = soc_result.target_power_kw;
+        final_suppressed = soc_result.suppressed;
+        final_suppress_reason = soc_result.suppress_reason;
+        input_summary << "SOC:target=" << double_to_string(soc_result.target_power_kw)
+                      << ",suppressed=" << (soc_result.suppressed ? "1" : "0")
+                      << ",cmd=" << soc_result.command_result;
+
+        update_runtime_state(db, soc->definition().id,
+                             soc_result.target_power_kw, setpoint_id,
+                             soc_result.suppressed, soc_result.suppress_reason,
+                             input_summary.str(), "");
+        write_action_log(db, soc->definition().id,
+                         soc_result.command_sent ? "command" : "suppress",
+                         setpoint_id,
+                         soc_result.target_power_kw, 0.0,
+                         soc_result.suppress_reason,
+                         input_summary.str(),
+                         soc_result.command_sent ? "ok" : "suppressed",
+                         soc_result.command_result);
       }
     }
 

@@ -28,6 +28,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
+    procps \
     python3 \
     python3-pip \
     python3-venv \
@@ -40,6 +41,7 @@ WORKDIR /opt/openems/install
 
 COPY --from=builder /opt/openems/install /opt/openems/install
 COPY docker/start_openems.sh /usr/local/bin/start_openems.sh
+COPY docker/e2e /opt/openems/e2e
 
 ENV VIRTUAL_ENV=/opt/openems/venv
 ENV PATH="/opt/openems/venv/bin:${PATH}"

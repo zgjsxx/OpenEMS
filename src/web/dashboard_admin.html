@@ -106,6 +106,24 @@ function formatValue(value) {
   return value.toFixed(4);
 }
 
+function teleindicationLabel(point) {
+  const code = Number(point.state_code);
+  const pointId = String(point.id || "");
+  if (pointId === "grid-on-off-status") return code === 1 ? "On-grid" : "Off-grid";
+  if (pointId === "grid-switch-position") return code === 1 ? "Closed" : "Open";
+  if (pointId === "pv-running-status" || pointId === "bess-run-mode") return code === 1 ? "Running" : "Stopped";
+  return code === 1 ? "On" : code === 0 ? "Off" : "Unknown";
+}
+
+function pointDisplayValue(point) {
+  if (!point.valid) return "---";
+  if (typeof point.value === "number") return formatValue(point.value);
+  if (typeof point.state_code === "number") {
+    return `${point.state_code} (${teleindicationLabel(point)})`;
+  }
+  return "-";
+}
+
 function canControl() {
   return currentUser && ["admin", "operator"].includes(currentUser.role);
 }
@@ -251,7 +269,7 @@ function renderDevices(points) {
     const body = rows.map((point) => {
       const isWritable = !!point.writable && canControl();
       const quality = OpenEMSAdmin.qualityPill(point.quality || "Unknown");
-      const value = point.valid ? formatValue(point.value) : "---";
+      const value = pointDisplayValue(point);
       if (isWritable) {
         const cmd = commandStatusCache[point.id] || {};
         const draftValue = Object.prototype.hasOwnProperty.call(commandDrafts, point.id) ? commandDrafts[point.id] : "";

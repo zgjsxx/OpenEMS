@@ -12,7 +12,7 @@
 - `src/collector/src/polling_service.cpp`
 - `src/collector/src/control_service.cpp`
 - `src/rt_db/src/rt_db.cpp`
-- `src/web/server.py`
+- `src/web/admin_server.py`
 - `src/web/shm_reader.py`
 
 ## 1. 总体架构
@@ -334,7 +334,7 @@ reader.read_command_status("bess-target-power")
 
 ## 6. 通过 Web 接口下发遥控遥调
 
-当前仓库已经提供了一个 FastAPI 服务 `src/web/server.py`，它基于共享内存提供 HTTP 接口。
+当前仓库已经提供了一个 FastAPI 服务 `src/web/admin_server.py`（`src/web/server.py` 为兼容转发脚本），它基于共享内存提供 HTTP 接口。
 
 ### 6.1 获取实时快照
 

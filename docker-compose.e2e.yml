@@ -1,0 +1,20 @@
+services:
+  bess-sim:
+    build:
+      context: .
+      dockerfile: docker/e2e/simulator/Dockerfile
+    container_name: openems-bess-sim
+    restart: unless-stopped
+    ports:
+      - "18080:18080"
+
+  openems:
+    depends_on:
+      bess-sim:
+        condition: service_started
+    environment:
+      OPENEMS_FORCE_SYNC_CONFIG_ON_START: "1"
+      OPENEMS_BOOTSTRAP_CONFIG_DIR: /opt/openems/e2e/config/tables
+      OPENEMS_INIT_SQL: /opt/openems/e2e/seed_strategy_demo.sql
+      OPENEMS_ENABLE_IEC104: "0"
+      OPENEMS_STRATEGY_RELOAD_INTERVAL: "2"

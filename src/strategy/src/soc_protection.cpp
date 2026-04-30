@@ -81,6 +81,7 @@ SocProtection::SocClampResult SocProtection::clamp(double target_kw) {
 StrategyExecutionResult SocProtection::execute() {
   StrategyExecutionResult result;
   result.target_power_kw = 0.0;
+  bool corrective_action = false;
 
   if (!bess_soc_ || !bess_power_) {
     result.suppressed = true;
@@ -128,12 +129,14 @@ StrategyExecutionResult SocProtection::execute() {
     if (p_bess > 0.0) {
       target = 0.0;  // Stop discharge
       result.suppress_reason = "SOC below low limit, stopping discharge";
+      corrective_action = true;
     }
   } else if (soc >= soc_high) {
     // SOC too high: if currently charging (p_bess < 0), stop it
     if (p_bess < 0.0) {
       target = 0.0;  // Stop charge
       result.suppress_reason = "SOC above high limit, stopping charge";
+      corrective_action = true;
     }
   } else {
     // SOC in normal range — nothing to do (upstream strategy controls)
@@ -144,11 +147,19 @@ StrategyExecutionResult SocProtection::execute() {
 
   result.target_power_kw = target;
 
-  if (cmd_handle_ && target != 0.0) {
+  if (cmd_handle_ && corrective_action) {
     auto submit_result = cmd_handle_->submit(target);
     if (submit_result.is_ok()) {
       result.command_sent = (submit_result.value() == "submitted");
       result.command_result = submit_result.value();
+      if (!result.command_sent) {
+        result.suppressed = true;
+        result.suppress_reason = submit_result.value();
+      }
+    } else {
+      result.suppressed = true;
+      result.suppress_reason =
+          "command submit failed: " + submit_result.error_msg();
     }
   }
 

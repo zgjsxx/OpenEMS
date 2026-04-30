@@ -18,15 +18,18 @@
 - 审计日志
 - 实时看板
 - 遥控遥调审计
+- 拓扑管理
+- 策略引擎管理
+- 系统监控
 
-后台管理数据统一落在 `PostgreSQL`，而实时采集数据、活动告警和历史数据仍沿用项目原有链路：
+后台管理数据统一落在 `PostgreSQL`，而实时采集数据和历史数据仍沿用项目原有链路：
 
 - 实时点位：`RtDb` 共享内存
-- 活动告警：`runtime/alarms_active.json`
+- 活动告警：PostgreSQL `alarm_events` 表（告警进程直接写入，不再通过 `alarms_active.json`）
 - 历史数据：`runtime/history/*.jsonl`
-- 现场配置：`config/tables/*.csv`
+- 现场配置：PostgreSQL 结构化配置表（CSV 保留为导入、导出和备份格式）
 
-也就是说，这套后台是“管理层 + 展示层”，不是采集核心本身。
+也就是说，这套后台是”管理层 + 展示层”，不是采集核心本身。
 
 ## 2. 代码位置
 
@@ -46,6 +49,9 @@
 - `src/web/history_admin.html`
 - `src/web/config_admin.html`
 - `src/web/comm_admin.html`
+- `src/web/topology_admin.html`
+- `src/web/strategy_admin.html`
+- `src/web/system_admin.html`
 - `src/web/users_admin.html`
 - `src/web/audit_admin.html`
 
@@ -161,17 +167,16 @@ python src/web/run_dashboard.py --port 8080
 
 ### 5.2 仍然保留文件或共享内存的数据源
 
-当前这些数据并没有迁移到数据库：
+当前这些数据并没有完全迁移到数据库：
 
-- `config/tables/*.csv`
-- `runtime/alarms_active.json`
-- `runtime/history/*.jsonl`
-- 共享内存 `RtDb`
+- `config/tables/*.csv`：CSV 保留为导入、导出、备份和初始 bootstrap 格式，运行时配置从 PostgreSQL 读取
+- `runtime/history/*.jsonl`：历史数据仍以 JSONL 文件存储
+- 共享内存 `RtDb`：实时点位和命令状态
 
 所以后台的实现方式是：
 
-- 从 CSV 读取并编辑通讯配置
-- 从活动告警文件读取，再同步到 PostgreSQL
+- 从 PostgreSQL 读取并编辑通讯配置
+- 从 PostgreSQL 读取活动告警（告警进程已直接写入 PostgreSQL）
 - 从历史 JSONL 文件查询历史
 - 从共享内存读取实时点位和命令状态
 
@@ -238,6 +243,8 @@ python src/web/run_dashboard.py --port 8080
 
 - `GET /api/history/points`
 - `GET /api/history/query`
+- `GET /api/history/query_multi`
+- `GET /api/history/query_aggregate`
 
 ### 6.5 `/config`
 
@@ -260,7 +267,7 @@ python src/web/run_dashboard.py --port 8080
 
 通讯配置页。
 
-当前支持在线编辑这些 CSV：
+当前支持在线编辑这些配置表：
 
 - `device.csv`
 - `telemetry.csv`
@@ -270,6 +277,7 @@ python src/web/run_dashboard.py --port 8080
 - `modbus_mapping.csv`
 - `iec104_mapping.csv`
 - 以及 `site.csv`、`ems_config.csv`
+- `alarm_rule.csv`
 
 涉及接口：
 
@@ -282,7 +290,71 @@ python src/web/run_dashboard.py --port 8080
 
 - `runtime/config_backups/<timestamp>/`
 
-### 6.7 `/users`
+### 6.7 `/config`
+
+配置编辑页（config-editor），与 `/comm` 不同，此页面直接操作 PostgreSQL 结构化配置表。
+
+涉及接口：
+
+- `GET /api/config-editor/schema`
+- `GET /api/config-editor/data`
+- `POST /api/config-editor/validate`
+- `POST /api/config-editor/save`
+- `GET /api/config/overview`
+- `GET /api/config`
+
+### 6.8 `/topology`
+
+拓扑管理页，展示站点电气单线图。
+
+当前支持：
+
+- SVG 单线图展示
+- 节点、线路、点位绑定配置
+- 实时数据叠加展示
+- 点击节点查看绑定点位、实时值和告警
+
+涉及接口：
+
+- `GET /api/topology`
+
+### 6.9 `/strategy`
+
+策略引擎管理页，管理防逆流和 SOC 保护策略。
+
+当前支持：
+
+- 查看策略定义、点位绑定和参数配置
+- 修改策略配置并保存
+- 查看策略运行状态
+- 查看策略动作日志
+
+涉及接口：
+
+- `GET /api/strategy`
+- `POST /api/strategy/save`
+- `GET /api/strategy/runtime`
+- `GET /api/strategy/logs`
+
+### 6.10 `/system`
+
+系统监控页，查看进程状态、资源使用和日志。
+
+当前支持：
+
+- 查看运行中的进程列表
+- 查看系统资源使用（CPU、内存、磁盘）
+- 查看服务日志
+- 控制服务启停（启动/停止）
+
+涉及接口：
+
+- `GET /api/system/processes`
+- `GET /api/system/resources`
+- `GET /api/system/logs`
+- `POST /api/system/services/{service}/{action}`
+
+### 6.11 `/users`
 
 用户管理页，只允许管理员访问。
 
@@ -298,7 +370,7 @@ python src/web/run_dashboard.py --port 8080
 - `POST /api/users`
 - `PATCH /api/users/{user_id}`
 
-### 6.8 `/audit`
+### 6.12 `/audit`
 
 审计日志页，只允许管理员访问。
 
@@ -454,15 +526,11 @@ python src/web/run_dashboard.py --port 8080
 - 多站点切换
 - 组织级权限隔离
 
-### 10.2 不是数据库配置中心
+### 10.2 配置主源已迁移到 PostgreSQL
 
-当前配置主源仍然是 CSV。
+当前运行时配置主源已从 CSV 迁移到 PostgreSQL 结构化配置表。
 
-后台只是可视化编辑层，不是：
-
-- 数据库存储点表
-- 数据库存储设备配置
-- 数据库存储协议映射
+CSV 保留为导入、导出、备份和初始 bootstrap 格式。`/comm` 页面编辑 CSV，`/config` 页面直接操作 PostgreSQL 结构化配置表。
 
 ### 10.3 实时数据仍依赖采集进程
 
