@@ -1,24 +1,24 @@
-# OpenEMS 策略引擎 E2E 测试说明
+# OpenEMS 策略 E2E 测试说明
 
-本文档说明如何验证当前 `openems-strategy-engine` 的第一条端到端测试链路。
+本文档说明当前策略链路的自动化测试和手工测试方法。
 
-当前 E2E 测试聚焦两个策略能力：
+当前 E2E 主要覆盖 3 个能力的联动：
 
 - 防逆流控制
 - SOC 上限保护
-
-测试对象当前只针对储能设备 `bess-001`。
+- 高 SOC 时的光伏限功率补偿
 
 ## 1. 测试目标
 
 这条 E2E 链路验证的是完整系统行为，而不是单个函数：
 
-1. 模拟器对外提供 Modbus TCP 数据
+1. 模拟器提供 Modbus TCP 数据
 2. OpenEMS 采集模拟器数据并写入 RtDb
-3. 策略引擎从 RtDb 读取实时点位
-4. 策略引擎计算目标功率并写入命令槽
-5. 控制链路把目标功率下发回模拟器
-6. 模拟器状态回写，最终在 Web 和数据库里看到正确结果
+3. 策略引擎从 RtDb 读取点位
+4. 策略引擎下发储能或光伏控制目标
+5. 控制链路把命令写回模拟器
+6. 模拟器更新实际状态
+7. Web 和 PostgreSQL 能看到正确结果
 
 ## 2. 当前测试内容
 
@@ -26,94 +26,63 @@
 
 输入条件：
 
-- `bess-soc = 50%`
-- `pv-active-power = 36 kW`
-- `load-power = 10 kW`
-- `bess-active-power = 0 kW`
-- `bess-target-power = 0 kW`
+- `bess_soc_pct = 50`
+- `pv_available_power_w = 36000`
+- `load_power_w = 10000`
+- `bess_active_power_w = 0`
 
-物理含义：
+预期：
 
-- 光伏发电 36 kW
-- 站内负荷 10 kW
-- 多余 26 kW 会从并网点反送到电网
+- `bess-target-power < 0`
+- `bess-active-power` 逐步接近目标值
+- `grid-active-power` 收敛到 `0kW` 附近
 
-预期结果：
-
-- 策略引擎识别到反送电
-- 自动把储能设为充电吸收功率
-- `bess-target-power` 变为约 `-26 kW`
-- `grid-active-power` 被拉回到约 `0 kW`
-
-### 2.2 场景二：SOC 上限保护
+### 2.2 场景二：高 SOC + 光伏限功率补偿
 
 输入条件：
 
-- `bess-soc = 90%`
-- `pv-active-power = 36 kW`
-- `load-power = 10 kW`
-- 其余条件与场景一相同
+- `bess_soc_pct = 90`
+- `pv_available_power_w = 36000`
+- `load_power_w = 10000`
+- `bess_active_power_w = 0`
 
-物理含义：
+预期：
 
-- 系统仍然存在 26 kW 的反送电趋势
-- 但储能 SOC 已超过上限，不允许继续充电
+- `bess-target-power = 0`
+- `bess-active-power = 0`
+- `pv-target-power-limit < 100`
+- `grid-active-power` 收敛到 `0kW` 附近
 
-预期结果：
+数据库预期：
 
-- 防逆流策略仍然会算出一个充电目标
-- SOC 保护策略会把该目标裁剪为 `0`
-- `bess-target-power = 0 kW`
-- `bess-active-power = 0 kW`
-- `grid-active-power = -26 kW`
-- 数据库中的策略运行状态应显示：
-  - `suppressed = true`
-  - `suppress_reason` 包含 `charge suppressed`
+- `strategy_runtime_state` 中
+  - `e2e-soc-protection` 显示 `charge suppressed`
+  - `e2e-anti-reverse-flow` 的 `current_target_point_id = pv-target-power-limit`
+- `strategy_action_logs` 中能看到：
+  - `strategy_id = e2e-anti-reverse-flow`
+  - `action_type = pv_curtailment`
+  - `target_point_id = pv-target-power-limit`
 
 ## 3. 测试环境组成
 
-这条 E2E 链路由三部分组成：
+当前 E2E 环境由以下部分组成：
 
 - `openems-postgres`
   - PostgreSQL / TimescaleDB
 - `openems-bess-sim`
-  - 储能 / PV / 电网一体化模拟器
+  - PV + BESS + Grid 一体化模拟器
 - `openems-app`
-  - OpenEMS 主容器，内部启动：
-  - `openems-rtdb-service`
-  - `openems-modbus-collector`
-  - `openems-history`
-  - `openems-alarm`
-  - `openems-strategy-engine`
-  - `openems-admin-portal`
+  - OpenEMS 主容器
 
 相关文件：
 
 - `docker-compose.yml`
 - `docker-compose.e2e.yml`
 - `docker/e2e/simulator/simulator.py`
-- `docker/e2e/config/tables/*.csv`
 - `docker/e2e/seed_strategy_demo.sql`
 - `scripts/run_strategy_e2e.py`
 
-## 4. 前置条件
-
-需要本机满足以下条件：
-
-- 已安装 Docker Desktop
-- 已启用 `docker compose`
-- 本机 `8080` 端口可用
-- 本机 `18080` 端口可用
-- 本机可以正常拉取 Docker 基础镜像
-
-建议先确认：
-
-```powershell
-docker version
-docker compose version
-```
-
-## 5. 启动测试环境
+## 4. 启动环境
 
 在仓库根目录执行：
 
@@ -121,19 +90,19 @@ docker compose version
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
 ```
 
-启动成功后，可检查容器状态：
+检查容器状态：
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml ps
 ```
 
-预期至少有这三个容器：
+预期至少看到：
 
 - `openems-postgres`
 - `openems-bess-sim`
 - `openems-app`
 
-## 6. 运行自动化 E2E 测试
+## 5. 运行自动化 E2E
 
 执行：
 
@@ -144,12 +113,10 @@ python scripts\run_strategy_e2e.py
 预期输出类似：
 
 ```text
-[strategy-e2e] Logging into admin portal...
-[strategy-e2e] Resetting simulator state...
 [strategy-e2e] Running anti-reverse-flow scenario at SOC=50%...
 [strategy-e2e] Anti-reverse-flow OK: bess-target-power=-26.00 kW, grid-active-power=0.00 kW
-[strategy-e2e] Running SOC high clamp scenario at SOC=90%...
-[strategy-e2e] SOC clamp OK: bess-target-power=0.00 kW, grid-active-power=-26.00 kW
+[strategy-e2e] Running SOC high clamp with PV curtailment scenario at SOC=90%...
+[strategy-e2e] SOC clamp + PV curtailment OK: bess-target-power=0.00 kW, bess-active-power=0.00 kW, pv-target-power-limit=10.00 %, grid-active-power=0.00 kW
 [strategy-e2e] E2E validation passed.
 ```
 
@@ -159,13 +126,11 @@ python scripts\run_strategy_e2e.py
 E2E validation passed.
 ```
 
-就说明当前第一条策略链路通过。
+就说明当前三层策略链路通过。
 
-## 7. 手动测试方法
+## 6. 手工测试
 
-除了脚本自动判断，建议再人工确认一次。
-
-### 7.1 打开模拟器页面
+### 6.1 打开模拟器页面
 
 浏览器打开：
 
@@ -173,91 +138,113 @@ E2E validation passed.
 http://127.0.0.1:18080/
 ```
 
-这个页面支持三种人工联调方式：
+这个页面支持：
 
-- 直接查看模拟器当前状态
-- 手工修改表单并点击“应用表单到模拟器”
-- 导入 CSV 场景表，并逐行点击“应用”
+- 查看当前模拟器状态
+- 手工修改状态并应用
+- 导入 CSV 场景表
+- 逐行应用 CSV 场景
+- 下载示例 CSV
 
-页面上还提供了“下载示例 CSV”入口，可直接拿来改。
+### 6.2 推荐关注的模拟器字段
 
-CSV 推荐字段包括：
+手工测试时，最关键的是以下几个字段：
+
+- `pv_available_power_w`
+  - 光伏当前可发功率，相当于“太阳给了多少”
+- `pv_power_w`
+  - 光伏实际输出功率，会受到 `pv-target-power-limit` 影响
+- `bess_soc_pct`
+- `bess_active_power_w`
+- `bess_target_power_w`
+- `load_power_w`
+
+注意：
+
+- 现在建议把 `pv_available_power_w` 作为场景输入
+- `pv_power_w` 更多用于观察实际输出结果
+- 为了兼容旧场景，页面和接口仍接受 `pv_power_w` 作为输入别名
+
+### 6.3 手工测试场景一：防逆流
+
+在模拟器页面中设置：
+
+```text
+bess_soc_pct = 50
+bess_active_power_w = 0
+bess_target_power_w = 0
+pv_available_power_w = 36000
+load_power_w = 10000
+bess_started = true
+bess_run_mode = 1
+bess_grid_state = 0
+```
+
+点击“应用”后，回到 OpenEMS 后台观察：
+
+- `bess-target-power`
+- `bess-active-power`
+- `grid-active-power`
+
+预期：
+
+- `bess-target-power` 变成约 `-26kW`
+- `bess-active-power` 逐步接近 `-26kW`
+- `grid-active-power` 逐步接近 `0kW`
+
+### 6.4 手工测试场景二：高 SOC + 光伏限发
+
+在模拟器页面中设置：
+
+```text
+bess_soc_pct = 90
+bess_active_power_w = 0
+bess_target_power_w = 0
+pv_available_power_w = 36000
+load_power_w = 10000
+bess_started = true
+bess_run_mode = 1
+bess_grid_state = 0
+```
+
+点击“应用”后，回到 OpenEMS 后台观察：
+
+- `bess-target-power`
+- `bess-active-power`
+- `pv-target-power-limit`
+- `pv-active-power`
+- `grid-active-power`
+
+预期：
+
+- `bess-target-power = 0`
+- `bess-active-power = 0`
+- `pv-target-power-limit < 100`
+- `pv-active-power` 降低到接近负荷水平
+- `grid-active-power` 收敛到 `0kW` 附近
+
+### 6.5 用 CSV 做手工回放
+
+模拟器页面支持导入 CSV 场景表。
+
+当前推荐字段：
 
 - `scenario_name`
 - `note`
 - `bess_soc_pct`
 - `bess_active_power_w`
 - `bess_target_power_w`
-- `pv_power_w`
+- `pv_available_power_w`
 - `load_power_w`
 - `bess_started`
 - `bess_run_mode`
 - `bess_grid_state`
 
-其中：
+可以先下载页面内置的示例 CSV，再按自己的测试场景修改。
 
-- `scenario_name` 和 `note` 仅用于页面展示
-- 其余字段会在点击“应用”时写入模拟器
+### 6.6 手工查看后台页面
 
-### 7.2 用模拟器页面做防逆流测试
-
-在页面中填入或导入这样一行：
-
-```text
-bess_soc_pct=50
-bess_active_power_w=0
-bess_target_power_w=0
-pv_power_w=36000
-load_power_w=10000
-bess_started=true
-bess_run_mode=1
-bess_grid_state=0
-```
-
-点击“应用”后，回到 OpenEMS 后台查看：
-
-- `bess-target-power`
-- `bess-active-power`
-- `grid-active-power`
-
-预期：
-
-- `bess-target-power` 变成约 `-26 kW`
-- `bess-active-power` 逐步趋近 `-26 kW`
-- `grid-active-power` 逐步趋近 `0 kW`
-
-### 7.3 用模拟器页面做 SOC 高位抑制测试
-
-在页面中填入或导入这样一行：
-
-```text
-bess_soc_pct=90
-bess_active_power_w=0
-bess_target_power_w=0
-pv_power_w=36000
-load_power_w=10000
-bess_started=true
-bess_run_mode=1
-bess_grid_state=0
-```
-
-点击“应用”后，回到 OpenEMS 后台查看：
-
-- `bess-target-power`
-- `bess-active-power`
-- `grid-active-power`
-
-预期：
-
-- `bess-target-power = 0 kW`
-- `bess-active-power = 0 kW`
-- `grid-active-power = -26 kW`
-
-说明当前存在反送电趋势，但储能因高 SOC 被禁止继续充电。
-
-### 7.4 查看 Web 实时点位
-
-浏览器打开：
+OpenEMS 后台地址：
 
 ```text
 http://127.0.0.1:8080/login
@@ -268,120 +255,85 @@ http://127.0.0.1:8080/login
 - 用户名：`admin`
 - 密码：`admin123`
 
-重点查看这些点：
+建议同时打开：
 
-- `bess-soc`
-- `bess-active-power`
-- `bess-target-power`
-- `grid-active-power`
+- 实时看板
+- 策略管理
+- 系统监控
 
-### 7.5 查看策略运行状态
+## 7. 查看数据库状态
 
-可以直接查询数据库：
-
-```powershell
-docker exec openems-postgres psql -U postgres -d openems_admin -c "select strategy_id,current_target_value,suppressed,suppress_reason,updated_at from strategy_runtime_state order by strategy_id;"
-```
-
-在高 SOC 场景下，预期类似：
-
-```text
-e2e-anti-reverse-flow | 0 | t | SOC(90%) >= high limit(80%), charge suppressed
-e2e-soc-protection    | 0 | t | SOC(90%) >= high limit(80%), charge suppressed
-```
-
-### 7.6 查看策略动作日志
-
-执行：
+查看策略运行状态：
 
 ```powershell
-docker exec openems-postgres psql -U postgres -d openems_admin -c "select strategy_id,action_type,desired_value,suppress_reason,result,created_at from strategy_action_logs order by id desc limit 10;"
+docker exec openems-postgres psql -U postgres -d openems_admin -c "select strategy_id,current_target_value,current_target_point_id,suppressed,suppress_reason,updated_at from strategy_runtime_state order by strategy_id;"
 ```
 
-预期在高 SOC 场景下能看到：
+查看策略动作日志：
 
-- `desired_value = 0`
-- `result = ok`
-- `suppress_reason` 包含 `charge suppressed`
+```powershell
+docker exec openems-postgres psql -U postgres -d openems_admin -c "select strategy_id,action_type,target_point_id,desired_value,suppress_reason,result,created_at from strategy_action_logs order by id desc limit 20;"
+```
 
-## 8. 测试脚本实际做了什么
+## 8. 常用排障命令
 
-`scripts/run_strategy_e2e.py` 依次做了以下事情：
-
-1. 等待模拟器 HTTP 服务就绪
-2. 等待后台登录页就绪
-3. 登录后台
-4. 重置模拟器状态
-5. 等待 `grid-active-power` 点位变为有效
-6. 执行场景一：
-   - 把模拟器改为 `SOC=50%`
-   - 等待 `bess-target-power < -5 kW`
-   - 同时等待 `grid-active-power` 接近 `0`
-7. 执行场景二：
-   - 把模拟器改为 `SOC=90%`
-   - 等待 `bess-target-power` 被压到 `0`
-   - 同时等待策略状态出现 `charge suppressed`
-
-## 9. 常用排障命令
-
-### 9.1 查看 OpenEMS 容器日志
+查看 OpenEMS 容器日志：
 
 ```powershell
 docker logs openems-app --tail 200
 ```
 
-### 9.2 查看模拟器当前状态
+查看模拟器状态：
 
 ```powershell
-docker exec openems-bess-sim python3 -c "import urllib.request, json; print(json.loads(urllib.request.urlopen('http://127.0.0.1:18080/state').read().decode()))"
+Invoke-RestMethod http://127.0.0.1:18080/state
 ```
 
-### 9.3 查看策略进程是否运行
+查看策略进程：
 
 ```powershell
 docker exec openems-app pgrep -af openems-strategy-engine
 ```
 
-### 9.4 重新拉起测试环境
+重新拉起环境：
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml down
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
 ```
 
-如果连数据库卷也要一起清空：
+如果连数据库卷也一起清空：
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v
 ```
 
-## 10. 当前测试覆盖范围
+## 9. 当前覆盖范围
 
-当前这条 E2E 只覆盖：
+当前 E2E 主要覆盖：
 
 - 单站
-- 单储能设备
+- 单储能
+- 单光伏
 - Modbus TCP 模拟器
 - 防逆流
-- SOC 上限保护
+- SOC 高位保护
+- 光伏限功率补偿
 
-还没有覆盖：
+尚未覆盖：
 
-- SOC 下限禁止放电
+- 低 SOC 禁止放电
 - 手动接管 30 分钟
-- 多储能协同
-- 并网点限值动态变化
-- IEC104 设备接入
-- 真实现场设备
+- 储能停机后仅靠 PV 限发兜底
+- 光伏限发的逐步恢复验证
+- 多设备协同
 
-## 11. 建议的下一批测试
+## 10. 下一步建议补测
 
-后续建议继续补这几条：
+建议下一批补这几条：
 
 1. `SOC < 下限` 时禁止放电
-2. 人工遥调后策略暂停接管
-3. 反送电消失后储能目标逐步回到 `0`
-4. 储能停机时策略抑制
-5. 命令槽忙时策略不重复覆盖
-
-这样这套 E2E 环境就可以逐步演进成策略模块的标准回归基线。
+2. 手动下发 `bess-target-power` 后策略暂停接管
+3. 手动下发 `pv-target-power-limit` 后策略暂停接管
+4. 逆流消失后 `pv-target-power-limit` 逐步恢复到 `100`
+5. `bess-run-mode = 0` 时由 PV 限发单独兜底

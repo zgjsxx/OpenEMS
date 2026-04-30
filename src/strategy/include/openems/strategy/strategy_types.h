@@ -27,7 +27,9 @@ inline std::string strategy_type_to_string(StrategyType t) {
 }
 
 struct StrategyBinding {
-  std::string role;     // "grid_power", "bess_power", "bess_soc", "bess_run_state", "bess_power_setpoint"
+  std::string role;     // "grid_power", "bess_power", "bess_soc", "bess_run_state",
+                        // "bess_power_setpoint", "pv_power", "pv_power_limit_setpoint",
+                        // "pv_run_state"
   common::PointId point_id;
 };
 
@@ -57,6 +59,14 @@ struct StrategyParams {
 
   // Manual override
   int manual_override_minutes = 30;
+
+  // Optional PV curtailment compensation, used as the third layer after
+  // anti-reverse-flow target calculation and SOC clamping.
+  bool enable_pv_curtailment = false;
+  double pv_rated_power_kw = 0.0;
+  double pv_limit_min_pct = 0.0;
+  double pv_limit_max_pct = 100.0;
+  double pv_limit_recovery_step_pct = 10.0;
 
   bool parse(const std::string& key, const std::string& value);
 };

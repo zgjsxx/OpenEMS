@@ -3,29 +3,43 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenEMS Strategy Management</title>
+<title>OpenEMS 策略管理</title>
 <link rel="stylesheet" href="/assets/admin.css">
 <style>
-  .status-ok { color: #22c55e; }
-  .status-warn { color: #eab308; }
-  .status-error { color: #ef4444; }
-  .strategy-card { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-  .strategy-card .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .strategy-card .header .name { font-size: 16px; font-weight: 600; }
-  .strategy-card .detail { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; }
-  .strategy-card .detail .kv { display: flex; gap: 4px; }
-  .strategy-card .detail .key { color: var(--muted); }
-  .strategy-card .detail .val { font-weight: 500; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
-  .pill.enabled { background: #22c55e20; color: #22c55e; }
-  .pill.disabled { background: #6b728020; color: #6b7280; }
-  .pill.override { background: #ef444420; color: #ef4444; }
-  .log-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
-  .log-table th, .log-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
-  .log-table th { color: var(--muted); font-weight: 500; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
-  .tabs button { padding: 6px 16px; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; }
-  .tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tabs button { padding: 8px 16px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--text); cursor: pointer; }
+  .tabs button.active { background: var(--accent); color: #081018; border-color: var(--accent); }
+  .stack { display: grid; gap: 16px; }
+  .strategy-card { border: 1px solid var(--border); border-radius: 14px; background: rgba(18, 23, 31, 0.65); padding: 18px; }
+  .strategy-card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .strategy-name { font-size: 18px; font-weight: 700; }
+  .strategy-meta { color: var(--muted); font-size: 13px; }
+  .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .badge.enabled { background: rgba(34, 197, 94, 0.16); color: #4ade80; }
+  .badge.disabled { background: rgba(148, 163, 184, 0.16); color: #94a3b8; }
+  .badge.warn { background: rgba(245, 158, 11, 0.16); color: #fbbf24; }
+  .kv-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: start; }
+  .kv-key { color: var(--muted); font-size: 13px; }
+  .kv-value { font-weight: 600; word-break: break-word; }
+  .section-block { margin-top: 16px; }
+  .section-title-sm { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+  .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; font-size: 12px; background: rgba(15, 23, 32, 0.75); }
+  .chip-role { color: var(--muted); }
+  .table-wrap { overflow: auto; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .log-table th, .log-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .log-table th { color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .status-ok { color: #4ade80; }
+  .status-warn { color: #fbbf24; }
+  .status-error { color: #f87171; }
+  @media (max-width: 960px) {
+    .kv-grid { grid-template-columns: 1fr; }
+    .kv { grid-template-columns: 1fr; gap: 4px; }
+    .strategy-card-header { flex-direction: column; align-items: flex-start; }
+  }
 </style>
 </head>
 <body>
@@ -44,6 +58,7 @@
       <a class="nav-link" data-page="comm" href="/comm">配置管理</a>
       <a class="nav-link" data-page="topology" href="/topology">拓扑管理</a>
       <a class="nav-link" data-page="strategy" href="/strategy">策略管理</a>
+      <a class="nav-link" data-page="system" href="/system">系统监控</a>
       <a class="nav-link admin-only" data-page="users" href="/users">用户管理</a>
       <a class="nav-link admin-only" data-page="audit" href="/audit">审计日志</a>
     </nav>
@@ -56,7 +71,7 @@
     <header class="topbar">
       <div>
         <div class="page-title">策略管理</div>
-        <div class="page-subtitle">防逆流控制、SOC保护等自动策略的配置与运行状态</div>
+        <div class="page-subtitle">当前已支持防逆流、SOC 保护和高 SOC 条件下的光伏限功率补偿。</div>
       </div>
     </header>
     <main class="page-content">
@@ -66,16 +81,14 @@
         <button data-tab="config">策略配置</button>
       </div>
 
-      <div id="tab-status">
-        <div id="strategy-list">加载中…</div>
-      </div>
+      <section id="tab-status" class="stack"></section>
 
-      <div id="tab-logs" style="display:none">
+      <section id="tab-logs" style="display:none">
         <div class="table-card">
           <div class="table-card-header">
             <div>
               <div class="section-title">策略动作日志</div>
-              <div class="section-subtitle">最近 200 条策略下发、抑制和错误记录</div>
+              <div class="section-subtitle">查看最近的策略下发、抑制和光伏限发恢复记录。</div>
             </div>
             <button id="refresh-logs" class="button secondary">刷新</button>
           </div>
@@ -84,8 +97,14 @@
               <table class="log-table">
                 <thead>
                   <tr>
-                    <th>时间</th><th>策略</th><th>类型</th><th>目标点位</th>
-                    <th>目标值</th><th>结果</th><th>抑制原因</th><th>详情</th>
+                    <th>时间</th>
+                    <th>策略</th>
+                    <th>动作</th>
+                    <th>目标点位</th>
+                    <th>目标值</th>
+                    <th>结果</th>
+                    <th>原因</th>
+                    <th>详情</th>
                   </tr>
                 </thead>
                 <tbody id="log-rows"></tbody>
@@ -93,136 +112,165 @@
             </div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div id="tab-config" style="display:none">
-        <div id="strategy-config-list">加载中…</div>
-      </div>
+      <section id="tab-config" style="display:none" class="stack"></section>
     </main>
   </div>
 </div>
 <script src="/assets/admin.js"></script>
 <script>
-(function() {
+(function () {
   const role = sessionStorage.getItem('_role') || 'viewer';
-  const isAdmin = role === 'admin';
   document.getElementById('current-username').textContent = sessionStorage.getItem('_username') || '-';
   document.getElementById('current-role').textContent = '(' + role + ')';
 
-  // Tabs
-  document.querySelectorAll('.tabs button').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('.nav-link').forEach(function (a) { a.classList.remove('active'); });
+  const navLink = document.querySelector('.nav-link[data-page="strategy"]');
+  if (navLink) navLink.classList.add('active');
+
+  document.getElementById('logout-btn').addEventListener('click', function () {
+    fetch('/api/auth/logout', { method: 'POST' }).then(function () { location.href = '/login'; });
+  });
+
+  document.querySelectorAll('.tabs button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.remove('active'); });
       btn.classList.add('active');
-      var tab = btn.dataset.tab;
+      const tab = btn.dataset.tab;
       document.getElementById('tab-status').style.display = tab === 'status' ? '' : 'none';
       document.getElementById('tab-logs').style.display = tab === 'logs' ? '' : 'none';
       document.getElementById('tab-config').style.display = tab === 'config' ? '' : 'none';
+      if (tab === 'status') loadStatus();
       if (tab === 'logs') loadLogs();
       if (tab === 'config') loadConfig();
-      if (tab === 'status') loadStatus();
     });
   });
 
   document.getElementById('refresh-logs').addEventListener('click', loadLogs);
-  document.getElementById('logout-btn').addEventListener('click', function() {
-    fetch('/api/auth/logout', { method: 'POST' }).then(function() { location.href = '/login'; });
-  });
 
-  // Highlight nav
-  document.querySelectorAll('.nav-link').forEach(function(a) { a.classList.remove('active'); });
-  var navLink = document.querySelector('.nav-link[data-page="strategy"]');
-  if (navLink) navLink.classList.add('active');
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function renderBindings(bindings) {
+    if (!bindings || !bindings.length) return '<div class="muted">未配置绑定</div>';
+    return '<div class="chip-list">' + bindings.map(function (binding) {
+      return '<div class="chip"><span class="chip-role">' + esc(binding.role) + '</span><span>' + esc(binding.point_id) + '</span></div>';
+    }).join('') + '</div>';
+  }
+
+  function renderParams(params) {
+    const entries = Object.entries(params || {});
+    if (!entries.length) return '<div class="muted">未配置参数</div>';
+    return '<div class="chip-list">' + entries.map(function (entry) {
+      return '<div class="chip"><span class="chip-role">' + esc(entry[0]) + '</span><span>' + esc(entry[1]) + '</span></div>';
+    }).join('') + '</div>';
+  }
 
   function loadStatus() {
     fetch('/api/strategy/runtime')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var rows = data.rows || [];
-        if (rows.length === 0) {
-          document.getElementById('strategy-list').innerHTML =
-            '<div class="card"><div class="muted">暂无运行中的策略。</div></div>';
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        const rows = data.rows || [];
+        const root = document.getElementById('tab-status');
+        if (!rows.length) {
+          root.innerHTML = '<div class="card"><div class="muted">暂无运行中的策略状态。</div></div>';
           return;
         }
-        var html = '';
-        rows.forEach(function(s) {
-          var now = new Date();
-          var overrideUntil = s.manual_override_until ? new Date(s.manual_override_until) : null;
-          var isOverridden = overrideUntil && overrideUntil > now;
-
-          html += '<div class="strategy-card">';
-          html += '<div class="header">';
-          html += '<span class="name">' + esc(s.name) + ' <span class="pill ' + (s.enabled ? 'enabled' : 'disabled') + '">' + (s.enabled ? '启用' : '禁用') + '</span></span>';
-          if (isOverridden) html += '<span class="pill override">人工接管至 ' + overrideUntil.toLocaleTimeString() + '</span>';
-          html += '</div>';
-          html += '<div class="detail">';
-          html += '<div class="kv"><span class="key">类型</span><span class="val">' + esc(s.type) + '</span></div>';
-          html += '<div class="kv"><span class="key">设备</span><span class="val">' + esc(s.device_id) + '</span></div>';
-          html += '<div class="kv"><span class="key">当前目标</span><span class="val">' + (s.current_target_value != null ? Number(s.current_target_value).toFixed(2) + ' kW' : '-') + '</span></div>';
-          html += '<div class="kv"><span class="key">最后执行</span><span class="val">' + (s.last_execution_time || '-') + '</span></div>';
-          html += '<div class="kv"><span class="key">抑制</span><span class="val ' + (s.suppressed ? 'status-warn' : 'status-ok') + '">' + (s.suppressed ? '是: ' + esc(s.suppress_reason) : '否') + '</span></div>';
-          html += '<div class="kv"><span class="key">错误</span><span class="val ' + (s.last_error ? 'status-error' : '') + '">' + (s.last_error || '无') + '</span></div>';
-          html += '<div class="kv"><span class="key">输入摘要</span><span class="val">' + esc(JSON.stringify(s.input_summary || {})) + '</span></div>';
-          html += '</div></div>';
-        });
-        document.getElementById('strategy-list').innerHTML = html;
+        root.innerHTML = rows.map(function (row) {
+          const overridden = row.manual_override_until ? new Date(row.manual_override_until) > new Date() : false;
+          const statusClass = row.suppressed ? 'status-warn' : 'status-ok';
+          return '' +
+            '<article class="strategy-card">' +
+              '<div class="strategy-card-header">' +
+                '<div>' +
+                  '<div class="strategy-name">' + esc(row.name) + '</div>' +
+                  '<div class="strategy-meta">' + esc(row.strategy_id || row.id || '') + ' · ' + esc(row.type) + ' · 设备 ' + esc(row.device_id || '-') + '</div>' +
+                '</div>' +
+                '<div>' +
+                  '<span class="badge ' + (row.enabled ? 'enabled' : 'disabled') + '">' + (row.enabled ? '启用' : '禁用') + '</span> ' +
+                  (overridden ? '<span class="badge warn">人工接管中</span>' : '') +
+                '</div>' +
+              '</div>' +
+              '<div class="kv-grid">' +
+                '<div class="kv"><div class="kv-key">当前目标值</div><div class="kv-value">' + esc(row.current_target_value == null ? '-' : row.current_target_value) + '</div></div>' +
+                '<div class="kv"><div class="kv-key">当前目标点位</div><div class="kv-value">' + esc(row.current_target_point_id || '-') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">是否抑制</div><div class="kv-value ' + statusClass + '">' + (row.suppressed ? '是' : '否') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">抑制原因</div><div class="kv-value">' + esc(row.suppress_reason || '-') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">人工接管截止</div><div class="kv-value">' + esc(row.manual_override_until || '-') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">最后执行时间</div><div class="kv-value">' + esc(row.last_execution_time || '-') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">最后错误</div><div class="kv-value ' + (row.last_error ? 'status-error' : '') + '">' + esc(row.last_error || '-') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">输入摘要</div><div class="kv-value">' + esc(JSON.stringify(row.input_summary || {})) + '</div></div>' +
+              '</div>' +
+            '</article>';
+        }).join('');
       });
   }
 
   function loadLogs() {
     fetch('/api/strategy/logs?limit=200')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var rows = data.rows || [];
-        var html = '';
-        rows.forEach(function(l) {
-          html += '<tr>';
-          html += '<td>' + (l.created_at || '-') + '</td>';
-          html += '<td>' + esc(l.strategy_id) + '</td>';
-          html += '<td>' + esc(l.action_type) + '</td>';
-          html += '<td>' + esc(l.target_point_id || '-') + '</td>';
-          html += '<td>' + (l.desired_value != null ? Number(l.desired_value).toFixed(2) : '-') + '</td>';
-          html += '<td class="' + (l.result === 'ok' ? 'status-ok' : 'status-warn') + '">' + esc(l.result) + '</td>';
-          html += '<td>' + esc(l.suppress_reason || '-') + '</td>';
-          html += '<td>' + esc(l.details || '-') + '</td>';
-          html += '</tr>';
-        });
-        if (rows.length === 0) html = '<tr><td colspan="8" class="muted">暂无日志</td></tr>';
-        document.getElementById('log-rows').innerHTML = html;
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        const rows = data.rows || [];
+        document.getElementById('log-rows').innerHTML = rows.length ? rows.map(function (row) {
+          const resultClass = row.result === 'ok' ? 'status-ok' : (row.result === 'failed' ? 'status-error' : 'status-warn');
+          return '' +
+            '<tr>' +
+              '<td>' + esc(row.created_at || '-') + '</td>' +
+              '<td>' + esc(row.strategy_id) + '</td>' +
+              '<td>' + esc(row.action_type) + '</td>' +
+              '<td>' + esc(row.target_point_id || '-') + '</td>' +
+              '<td>' + esc(row.desired_value == null ? '-' : row.desired_value) + '</td>' +
+              '<td class="' + resultClass + '">' + esc(row.result || '-') + '</td>' +
+              '<td>' + esc(row.suppress_reason || '-') + '</td>' +
+              '<td>' + esc(row.details || '-') + '</td>' +
+            '</tr>';
+        }).join('') : '<tr><td colspan="8" class="muted">暂无日志</td></tr>';
       });
   }
 
   function loadConfig() {
     fetch('/api/strategy')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        var rows = data.rows || [];
-        if (rows.length === 0) {
-          document.getElementById('strategy-config-list').innerHTML =
-            '<div class="card"><div class="muted">暂无策略配置。请在 strategy_definitions 表中添加策略。</div></div>';
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        const rows = data.rows || [];
+        const root = document.getElementById('tab-config');
+        if (!rows.length) {
+          root.innerHTML = '<div class="card"><div class="muted">暂无策略配置。</div></div>';
           return;
         }
-        var html = '';
-        rows.forEach(function(s) {
-          html += '<div class="strategy-card">';
-          html += '<div class="header"><span class="name">' + esc(s.name) + ' <span class="pill ' + (s.enabled ? 'enabled' : 'disabled') + '">' + (s.enabled ? '启用' : '禁用') + '</span></span></div>';
-          html += '<div class="detail">';
-          html += '<div class="kv"><span class="key">ID</span><span class="val">' + esc(s.id) + '</span></div>';
-          html += '<div class="kv"><span class="key">类型</span><span class="val">' + esc(s.type) + '</span></div>';
-          html += '<div class="kv"><span class="key">设备</span><span class="val">' + esc(s.device_id) + '</span></div>';
-          html += '<div class="kv"><span class="key">优先级</span><span class="val">' + s.priority + '</span></div>';
-          html += '<div class="kv"><span class="key">周期</span><span class="val">' + s.cycle_ms + 'ms</span></div>';
-          html += '<div class="kv"><span class="key">绑定</span><span class="val">' + esc(JSON.stringify(s.bindings || [])) + '</span></div>';
-          html += '<div class="kv"><span class="key">参数</span><span class="val">' + esc(JSON.stringify(s.params || {})) + '</span></div>';
-          html += '</div></div>';
-        });
-        document.getElementById('strategy-config-list').innerHTML = html;
+        root.innerHTML = rows.map(function (row) {
+          return '' +
+            '<article class="strategy-card">' +
+              '<div class="strategy-card-header">' +
+                '<div>' +
+                  '<div class="strategy-name">' + esc(row.name) + '</div>' +
+                  '<div class="strategy-meta">' + esc(row.id) + ' · ' + esc(row.type) + ' · 设备 ' + esc(row.device_id || '-') + '</div>' +
+                '</div>' +
+                '<div><span class="badge ' + (row.enabled ? 'enabled' : 'disabled') + '">' + (row.enabled ? '启用' : '禁用') + '</span></div>' +
+              '</div>' +
+              '<div class="kv-grid">' +
+                '<div class="kv"><div class="kv-key">站点</div><div class="kv-value">' + esc(row.site_id || '-') + '</div></div>' +
+                '<div class="kv"><div class="kv-key">优先级</div><div class="kv-value">' + esc(row.priority) + '</div></div>' +
+                '<div class="kv"><div class="kv-key">执行周期</div><div class="kv-value">' + esc(row.cycle_ms) + ' ms</div></div>' +
+                '<div class="kv"><div class="kv-key">说明</div><div class="kv-value">当前支持防逆流、SOC 保护和光伏限发补偿。</div></div>' +
+              '</div>' +
+              '<div class="section-block">' +
+                '<div class="section-title-sm">绑定点位</div>' +
+                renderBindings(row.bindings || []) +
+              '</div>' +
+              '<div class="section-block">' +
+                '<div class="section-title-sm">参数</div>' +
+                renderParams(row.params || {}) +
+              '</div>' +
+            '</article>';
+        }).join('');
       });
-  }
-
-  function esc(s) {
-    if (!s) return '';
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
   loadStatus();

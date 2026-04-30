@@ -143,6 +143,10 @@ struct LoadedStrategy {
   std::unique_ptr<openems::strategy::IStrategy> instance;
 };
 
+struct PvRecoveryRuntime {
+  int confirm_cycles = 0;
+};
+
 static std::string pq_get_str(void* res, int row, int col, DbContext& db) {
   if (!res) return "";
   const char* val = db.api.PQgetvalue(res, row, col);
@@ -304,6 +308,51 @@ static void load_manual_overrides(DbContext& db,
   if (res) db.api.PQclear(res);
 }
 
+static std::string find_binding_point_id(
+    const openems::strategy::StrategyDefinition& def,
+    const std::string& role) {
+  for (const auto& binding : def.bindings) {
+    if (binding.role == role) return binding.point_id;
+  }
+  return {};
+}
+
+static bool read_point_value(openems::rt_db::RtDb* rt_db,
+                             const std::string& point_id,
+                             double& value_out,
+                             std::string& error_out) {
+  if (point_id.empty()) {
+    error_out = "binding not configured";
+    return false;
+  }
+
+  openems::core::PointHandle handle(point_id, rt_db);
+  auto result = handle.read_value();
+  if (!result.is_ok() || !handle.is_valid()) {
+    error_out = "point read failed or invalid: " + point_id;
+    return false;
+  }
+
+  value_out = result.value();
+  error_out.clear();
+  return true;
+}
+
+static std::pair<bool, std::string> submit_target(openems::rt_db::RtDb* rt_db,
+                                                  const std::string& point_id,
+                                                  double target_value,
+                                                  double deadband) {
+  if (point_id.empty()) {
+    return {false, "target binding not configured"};
+  }
+  openems::core::CommandHandle handle(point_id, rt_db, deadband, 0.1);
+  auto submit_result = handle.submit(target_value);
+  if (!submit_result.is_ok()) {
+    return {false, "command submit failed: " + submit_result.error_msg()};
+  }
+  return {submit_result.value() == "submitted", submit_result.value()};
+}
+
 static void write_action_log(DbContext& db,
                              const std::string& strategy_id,
                              const std::string& action_type,
@@ -414,6 +463,7 @@ int main(int argc, char* argv[]) {
 
   std::unordered_map<std::string, uint64_t> manual_overrides;
   load_manual_overrides(db, manual_overrides);
+  std::unordered_map<std::string, PvRecoveryRuntime> pv_recovery_state;
 
   int reload_counter = 0;
   int reload_interval = 30;
@@ -423,6 +473,9 @@ int main(int argc, char* argv[]) {
   }
 
   OPENEMS_LOG_I("StrategyEngine", "Running. Cycle interval: 1000ms");
+
+  constexpr double kPvRecoveryDeadbandKw = 2.0;
+  constexpr int kPvRecoveryConfirmCycles = 3;
 
   while (g_running.load()) {
     uint64_t cycle_start = now_ms();
@@ -435,14 +488,18 @@ int main(int argc, char* argv[]) {
     ++reload_counter;
 
     // Find anti-reverse-flow and SOC protection strategies
+    LoadedStrategy* arf_strategy = nullptr;
+    LoadedStrategy* soc_strategy = nullptr;
     openems::strategy::AntiReverseFlow* arf = nullptr;
     openems::strategy::SocProtection* soc = nullptr;
 
     for (auto& ls : strategies) {
       if (ls.def.type == openems::strategy::StrategyType::AntiReverseFlow) {
+        arf_strategy = &ls;
         arf = static_cast<openems::strategy::AntiReverseFlow*>(
             ls.instance.get());
       } else if (ls.def.type == openems::strategy::StrategyType::SocProtection) {
+        soc_strategy = &ls;
         soc = static_cast<openems::strategy::SocProtection*>(
             ls.instance.get());
       }
@@ -479,19 +536,18 @@ int main(int argc, char* argv[]) {
           "manual override active for device: " + override_device;
     } else {
       std::string arf_setpoint_id;
-
-      auto submit_final_target = [&](const std::string& point_id,
-                                     double target_kw) -> std::pair<bool, std::string> {
-        if (point_id.empty()) {
-          return {false, "bess_power_setpoint binding not configured"};
-        }
-        openems::core::CommandHandle final_handle(point_id, rt_db, 0.1, 0.1);
-        auto submit_result = final_handle.submit(target_kw);
-        if (!submit_result.is_ok()) {
-          return {false, "command submit failed: " + submit_result.error_msg()};
-        }
-        return {submit_result.value() == "submitted", submit_result.value()};
-      };
+      bool arf_suppressed = false;
+      std::string arf_suppress_reason;
+      bool soc_charge_clamped = false;
+      bool soc_runtime_suppressed = false;
+      std::string soc_runtime_reason = "SOC in normal range";
+      bool pv_action_active = false;
+      bool pv_recovery_active = false;
+      std::string pv_action_reason;
+      std::string pv_setpoint_id;
+      double pv_target_limit_pct = 100.0;
+      bool pv_command_submitted = false;
+      std::string pv_submit_message;
 
       // Step 1: Anti-reverse-flow calculates target only.
       if (arf) {
@@ -500,8 +556,10 @@ int main(int argc, char* argv[]) {
         input_summary << "ARF:target=" << double_to_string(arf_result.target_power_kw);
 
         final_target = arf_result.target_power_kw;
-        final_suppressed = arf_result.suppressed;
-        final_suppress_reason = arf_result.suppress_reason;
+        arf_suppressed = arf_result.suppressed;
+        arf_suppress_reason = arf_result.suppress_reason;
+        final_suppressed = arf_suppressed;
+        final_suppress_reason = arf_suppress_reason;
 
         for (const auto& b : arf->definition().bindings) {
           if (b.role == "bess_power_setpoint") arf_setpoint_id = b.point_id;
@@ -523,11 +581,159 @@ int main(int argc, char* argv[]) {
           final_target = clamp.clamped_kw;
           final_suppressed = true;
           final_suppress_reason = clamp.reason;
+          soc_runtime_suppressed = true;
+          soc_runtime_reason = clamp.reason;
+          if (arf_target < 0.0 &&
+              clamp.reason.find("high limit") != std::string::npos &&
+              std::abs(clamp.clamped_kw) < 1e-6) {
+            soc_charge_clamped = true;
+          }
         }
       }
 
       if (arf) {
-        auto [submitted, submit_message] = submit_final_target(arf_setpoint_id, final_target);
+        if (arf_strategy && arf_strategy->params.enable_pv_curtailment) {
+          auto& pv_runtime = pv_recovery_state[arf_strategy->def.id];
+          pv_setpoint_id = find_binding_point_id(arf_strategy->def, "pv_power_limit_setpoint");
+          std::string pv_power_id = find_binding_point_id(arf_strategy->def, "pv_power");
+          std::string pv_run_state_id = find_binding_point_id(arf_strategy->def, "pv_run_state");
+
+          double grid_power_kw = 0.0;
+          std::string read_error;
+          if (read_point_value(rt_db, find_binding_point_id(arf_strategy->def, "grid_power"),
+                               grid_power_kw, read_error)) {
+            bool reverse_flow_active =
+                grid_power_kw < (arf_strategy->params.export_limit_kw - 1e-6);
+            bool bess_unavailable =
+                arf_suppressed &&
+                arf_suppress_reason.find("BESS not running") != std::string::npos;
+
+            bool pv_running = true;
+            if (!pv_run_state_id.empty()) {
+              double pv_run_state = 0.0;
+              if (!read_point_value(rt_db, pv_run_state_id, pv_run_state, read_error)) {
+                pv_running = false;
+              } else {
+                pv_running = std::abs(pv_run_state) > 1e-6;
+              }
+            }
+
+            if (pv_running && !pv_setpoint_id.empty() &&
+                arf_strategy->params.pv_rated_power_kw > 0.0) {
+              double current_limit_pct = arf_strategy->params.pv_limit_max_pct;
+              double current_pv_power_value = 0.0;
+              read_point_value(rt_db, pv_setpoint_id, current_limit_pct, read_error);
+              if (read_point_value(rt_db, pv_power_id, current_pv_power_value, read_error)) {
+                double current_pv_power_kw = current_pv_power_value;
+                if (std::abs(current_pv_power_kw) >
+                    (arf_strategy->params.pv_rated_power_kw * 2.0)) {
+                  current_pv_power_kw /= 1000.0;
+                }
+                const double min_limit =
+                    (arf_strategy->params.pv_limit_min_pct > 0.0)
+                        ? arf_strategy->params.pv_limit_min_pct
+                        : 0.0;
+                const double max_limit =
+                    (arf_strategy->params.pv_limit_max_pct > min_limit)
+                        ? arf_strategy->params.pv_limit_max_pct
+                        : min_limit;
+                const double recovery_ready_grid_kw =
+                    arf_strategy->params.export_limit_kw + kPvRecoveryDeadbandKw;
+                const bool recovery_headroom_available =
+                    grid_power_kw > recovery_ready_grid_kw;
+
+                if (reverse_flow_active && (soc_charge_clamped || bess_unavailable)) {
+                  pv_runtime.confirm_cycles = 0;
+                  const double excess_export_kw =
+                      arf_strategy->params.export_limit_kw - grid_power_kw;
+                  const double desired_pv_power_kw =
+                      (current_pv_power_kw - excess_export_kw > 0.0)
+                          ? (current_pv_power_kw - excess_export_kw)
+                          : 0.0;
+                  double desired_limit_pct =
+                      (desired_pv_power_kw / arf_strategy->params.pv_rated_power_kw) * 100.0;
+                  if (desired_limit_pct < min_limit) desired_limit_pct = min_limit;
+                  if (desired_limit_pct > max_limit) desired_limit_pct = max_limit;
+
+                  if (std::abs(desired_limit_pct - current_limit_pct) > 0.1) {
+                    pv_target_limit_pct = desired_limit_pct;
+                    auto [submitted, submit_message] = submit_target(
+                        rt_db, pv_setpoint_id, pv_target_limit_pct, 0.2);
+                    pv_command_submitted = submitted;
+                    pv_submit_message = submit_message;
+                  } else {
+                    pv_target_limit_pct = current_limit_pct;
+                    pv_submit_message = "debounced";
+                  }
+
+                  pv_action_active = true;
+                  pv_action_reason = soc_charge_clamped
+                      ? "PV curtailment compensation active after SOC high clamp"
+                      : "PV curtailment compensation active because BESS is unavailable";
+                  input_summary << " | PV:limit="
+                                << double_to_string(pv_target_limit_pct)
+                                << "%,grid=" << double_to_string(grid_power_kw)
+                                << ",reason=" << pv_action_reason;
+                } else if (current_limit_pct < (max_limit - 0.1)) {
+                  if (recovery_headroom_available) {
+                    pv_runtime.confirm_cycles += 1;
+                  } else {
+                    pv_runtime.confirm_cycles = 0;
+                  }
+
+                  if (pv_runtime.confirm_cycles >= kPvRecoveryConfirmCycles) {
+                    const double grid_headroom_kw =
+                        grid_power_kw - recovery_ready_grid_kw;
+                    double allowed_recovery_pct =
+                        (grid_headroom_kw / arf_strategy->params.pv_rated_power_kw) * 100.0;
+                    if (allowed_recovery_pct < 0.0) allowed_recovery_pct = 0.0;
+
+                    double recovery_step_pct =
+                        arf_strategy->params.pv_limit_recovery_step_pct;
+                    if (allowed_recovery_pct < recovery_step_pct) {
+                      recovery_step_pct = allowed_recovery_pct;
+                    }
+
+                    if (recovery_step_pct > 0.1) {
+                      pv_target_limit_pct = current_limit_pct + recovery_step_pct;
+                      if (pv_target_limit_pct > max_limit) {
+                        pv_target_limit_pct = max_limit;
+                      }
+                      auto [submitted, submit_message] = submit_target(
+                          rt_db, pv_setpoint_id, pv_target_limit_pct, 0.2);
+                      pv_command_submitted = submitted;
+                      pv_submit_message = submit_message;
+                      pv_recovery_active = true;
+                      pv_action_reason = "PV curtailment recovering toward 100%";
+                      input_summary << " | PV:recover="
+                                    << double_to_string(pv_target_limit_pct)
+                                    << "%,grid=" << double_to_string(grid_power_kw)
+                                    << ",headroom=" << double_to_string(grid_headroom_kw)
+                                    << ",confirm=" << pv_runtime.confirm_cycles;
+                    } else {
+                      pv_submit_message = "recovery headroom too small";
+                      input_summary << " | PV:hold="
+                                    << double_to_string(current_limit_pct)
+                                    << "%,grid=" << double_to_string(grid_power_kw)
+                                    << ",headroom=0";
+                    }
+                  } else {
+                    pv_submit_message = "recovery confirmation pending";
+                    input_summary << " | PV:hold="
+                                  << double_to_string(current_limit_pct)
+                                  << "%,grid=" << double_to_string(grid_power_kw)
+                                  << ",confirm=" << pv_runtime.confirm_cycles
+                                  << "/" << kPvRecoveryConfirmCycles;
+                  }
+                } else {
+                  pv_runtime.confirm_cycles = 0;
+                }
+              }
+            }
+          }
+        }
+
+        auto [submitted, submit_message] = submit_target(rt_db, arf_setpoint_id, final_target, 0.1);
         if (submitted) {
           input_summary << ",sent=1,cmd=" << submit_message;
         } else {
@@ -538,34 +744,52 @@ int main(int argc, char* argv[]) {
           }
         }
 
+        if (pv_action_active || pv_recovery_active) {
+          if (pv_command_submitted) {
+            final_suppressed = false;
+            final_suppress_reason = pv_action_reason;
+          } else if (!pv_submit_message.empty() && pv_submit_message != "debounced") {
+            final_suppressed = true;
+            final_suppress_reason = pv_submit_message;
+          } else {
+            final_suppressed = false;
+            final_suppress_reason = pv_action_reason;
+          }
+        }
+
         arf->mark_target_applied(final_target);
         update_runtime_state(db, arf->definition().id,
-                             final_target, arf_setpoint_id,
+                             pv_action_active || pv_recovery_active ? pv_target_limit_pct : final_target,
+                             pv_action_active || pv_recovery_active ? pv_setpoint_id : arf_setpoint_id,
                              final_suppressed,
                              final_suppress_reason,
                              input_summary.str(), "");
         write_action_log(db, arf->definition().id,
-                         submitted ? "command" : "suppress",
-                         arf_setpoint_id,
-                         final_target, 0.0,
+                         pv_action_active ? "pv_curtailment" :
+                         (pv_recovery_active ? "pv_recovery" : (submitted ? "command" : "suppress")),
+                         pv_action_active || pv_recovery_active ? pv_setpoint_id : arf_setpoint_id,
+                         pv_action_active || pv_recovery_active ? pv_target_limit_pct : final_target,
+                         0.0,
                          final_suppress_reason,
                          input_summary.str(),
-                         submitted ? "ok" : "suppressed",
-                         submit_message);
+                         (pv_action_active || pv_recovery_active)
+                             ? ((pv_command_submitted || pv_submit_message == "debounced") ? "ok" : "suppressed")
+                             : (submitted ? "ok" : "suppressed"),
+                         (pv_action_active || pv_recovery_active) ? pv_submit_message : submit_message);
 
         if (soc) {
           update_runtime_state(db, soc->definition().id,
                                final_target, arf_setpoint_id,
-                               final_suppressed,
-                               final_suppress_reason.empty() ? "SOC in normal range" : final_suppress_reason,
+                               soc_runtime_suppressed,
+                               soc_runtime_reason,
                                input_summary.str(), "");
           write_action_log(db, soc->definition().id,
                            submitted ? "command" : "suppress",
                            arf_setpoint_id,
                            final_target, 0.0,
-                           final_suppress_reason,
+                           soc_runtime_reason,
                            input_summary.str(),
-                           submitted ? "ok" : "suppressed",
+                           soc_runtime_suppressed ? "suppressed" : (submitted ? "ok" : "suppressed"),
                            submit_message);
         }
       } else if (soc) {

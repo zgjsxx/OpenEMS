@@ -141,7 +141,7 @@ def assert_anti_reverse_flow(app_client: HttpClient, sim_client: HttpClient) -> 
             "bess_soc_pct": 50.0,
             "bess_active_power_w": 0,
             "bess_target_power_w": 0,
-            "pv_power_w": 36000,
+            "pv_available_power_w": 36000,
             "load_power_w": 10000,
             "bess_started": True,
             "bess_run_mode": 1,
@@ -167,14 +167,14 @@ def assert_anti_reverse_flow(app_client: HttpClient, sim_client: HttpClient) -> 
 
 
 def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
-    log("Running SOC high clamp scenario at SOC=90%...")
+    log("Running SOC high clamp with PV curtailment scenario at SOC=90%...")
     simulator_patch(
         sim_client,
         {
             "bess_soc_pct": 90.0,
             "bess_active_power_w": 0,
             "bess_target_power_w": 0,
-            "pv_power_w": 36000,
+            "pv_available_power_w": 36000,
             "load_power_w": 10000,
             "bess_started": True,
             "bess_run_mode": 1,
@@ -183,17 +183,20 @@ def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
     )
 
     snap, runtime, logs = wait_condition(
-        "soc high clamp keeps bess target at zero",
+        "soc high clamp hands over to pv curtailment",
         app_client,
         lambda s, r, l: abs(read_point(s, "bess-target-power")) < 0.25
+        and abs(read_point(s, "bess-active-power")) < 0.25
+        and read_point(s, "pv-target-power-limit") < 99.5
+        and abs(read_point(s, "grid-active-power")) < 5.0
         and any(
             row.get("strategy_id") == "e2e-soc-protection"
             and str(row.get("suppress_reason") or "").find("charge suppressed") >= 0
             for row in r
         )
         and any(
-            row.get("strategy_id") == "e2e-soc-protection"
-            and str(row.get("suppress_reason") or "").find("charge suppressed") >= 0
+            row.get("strategy_id") == "e2e-anti-reverse-flow"
+            and row.get("target_point_id") == "pv-target-power-limit"
             for row in l
         ),
         timeout=90,
@@ -201,10 +204,20 @@ def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
     )
 
     bess_target_kw = read_point(snap, "bess-target-power")
+    bess_actual_kw = read_point(snap, "bess-active-power")
     grid_power_kw = read_point(snap, "grid-active-power")
+    pv_limit_pct = read_point(snap, "pv-target-power-limit")
     soc_runtime = find_runtime(runtime, "e2e-soc-protection")
-    log(f"SOC clamp OK: bess-target-power={bess_target_kw:.2f} kW, grid-active-power={grid_power_kw:.2f} kW")
+    arf_runtime = find_runtime(runtime, "e2e-anti-reverse-flow")
+    log(
+        "SOC clamp + PV curtailment OK: "
+        f"bess-target-power={bess_target_kw:.2f} kW, "
+        f"bess-active-power={bess_actual_kw:.2f} kW, "
+        f"pv-target-power-limit={pv_limit_pct:.2f} %, "
+        f"grid-active-power={grid_power_kw:.2f} kW"
+    )
     log(f"SOC runtime: suppressed={soc_runtime.get('suppressed')} reason={soc_runtime.get('suppress_reason')}")
+    log(f"ARF runtime: target_point={arf_runtime.get('current_target_point_id')} value={arf_runtime.get('current_target_value')}")
 
 
 def main() -> int:

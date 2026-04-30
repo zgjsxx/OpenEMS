@@ -18,6 +18,7 @@ PV_UNIT = 1
 BESS_UNIT = 2
 GRID_UNIT = 3
 CAPACITY_KWH = float(os.environ.get("SIM_BESS_CAPACITY_KWH", "100"))
+PV_RATED_POWER_W = float(os.environ.get("SIM_PV_RATED_POWER_W", "100000"))
 RAMP_W_PER_S = float(os.environ.get("SIM_BESS_RAMP_W_PER_S", "20000"))
 STEP_SECONDS = 0.5
 
@@ -38,6 +39,7 @@ def _words_to_int32(words: list[int]) -> int:
 
 
 DEFAULT_STATE = {
+    "pv_available_power_w": 36000,
     "pv_power_w": 36000,
     "pv_voltage_v": 400.0,
     "pv_current_a": 90.0,
@@ -281,7 +283,7 @@ SIMULATOR_PAGE = """<!doctype html>
   <script>
     const BOOLEAN_FIELDS = new Set(["bess_started"]);
     const STATE_FIELDS = [
-      "pv_power_w", "pv_voltage_v", "pv_current_a", "pv_running_status",
+      "pv_available_power_w", "pv_power_w", "pv_voltage_v", "pv_current_a", "pv_running_status",
       "pv_target_power_w", "pv_target_power_limit_pct",
       "load_power_w",
       "bess_soc_pct", "bess_active_power_w", "bess_target_power_w",
@@ -469,7 +471,7 @@ SIMULATOR_PAGE = """<!doctype html>
         noteTd.textContent = row.note || "-";
         valueTd.textContent =
           "SOC=" + (row.bess_soc_pct ?? "-") +
-          ", PV=" + (row.pv_power_w ?? "-") +
+          ", PV=" + (row.pv_available_power_w ?? row.pv_power_w ?? "-") +
           ", Load=" + (row.load_power_w ?? "-") +
           ", Target=" + (row.bess_target_power_w ?? "-");
 
@@ -525,7 +527,7 @@ SIMULATOR_PAGE = """<!doctype html>
 </html>
 """
 
-SAMPLE_CSV = """scenario_name,note,bess_soc_pct,bess_active_power_w,bess_target_power_w,pv_power_w,load_power_w,bess_started,bess_run_mode,bess_grid_state
+SAMPLE_CSV = """scenario_name,note,bess_soc_pct,bess_active_power_w,bess_target_power_w,pv_available_power_w,load_power_w,bess_started,bess_run_mode,bess_grid_state
 防逆流-正常SOC,SOC 正常且存在反送电,50,0,0,36000,10000,true,1,0
 SOC高位抑制,SOC 已高于上限，禁止继续充电,90,0,0,36000,10000,true,1,0
 SOC低位场景,后续可用于验证低 SOC 保护,10,0,0,8000,26000,true,1,0
@@ -568,11 +570,19 @@ def _read_bess_target_state() -> None:
         state["bess_started"] = bool(start_coil[0]) if start_coil else True
 
 
+def _read_pv_target_state() -> None:
+    pv = _slave(PV_UNIT)
+    target_words = pv.getValues(3, 17, count=2)
+    target_limit = pv.getValues(3, 20, count=1)
+    with state_lock:
+        state["pv_target_power_w"] = _words_to_int32(target_words)
+        state["pv_target_power_limit_pct"] = (target_limit[0] if target_limit else 1000) / 10.0
+
+
 def _sync_registers() -> None:
     with state_lock:
-        pv_power_w = int(state["pv_power_w"])
+        pv_available_power_w = int(state.get("pv_available_power_w", state["pv_power_w"]))
         pv_voltage_v = float(state["pv_voltage_v"])
-        pv_current_a = float(state["pv_current_a"])
         pv_running_status = int(state["pv_running_status"])
         pv_target_power_w = int(state["pv_target_power_w"])
         pv_target_power_limit_pct = float(state["pv_target_power_limit_pct"])
@@ -588,6 +598,14 @@ def _sync_registers() -> None:
         grid_on_off_status = int(state["grid_on_off_status"])
         grid_switch_position = int(state["grid_switch_position"])
         load_power_w = int(state["load_power_w"])
+
+    pv_limit_pct = max(0.0, min(100.0, pv_target_power_limit_pct))
+    if pv_running_status:
+        pv_limit_power_w = PV_RATED_POWER_W * pv_limit_pct / 100.0
+        pv_power_w = int(round(min(float(pv_available_power_w), pv_limit_power_w)))
+    else:
+        pv_power_w = 0
+    pv_current_a = (pv_power_w / max(pv_voltage_v, 1.0)) if pv_voltage_v > 0 else 0.0
 
     grid_power_kw = (load_power_w - pv_power_w - bess_active_power_w) / 1000.0
 
@@ -617,6 +635,8 @@ def _sync_registers() -> None:
     grid.setValues(3, 7, [grid_switch_position])
 
     with state_lock:
+        state["pv_power_w"] = pv_power_w
+        state["pv_current_a"] = round(pv_current_a, 3)
         state["grid_active_power_kw"] = grid_power_kw
 
 
@@ -628,8 +648,13 @@ def _reset_state() -> None:
 
 
 def _apply_state_patch(payload: dict) -> None:
+    has_pv_available = "pv_available_power_w" in payload
     with state_lock:
         for key, value in payload.items():
+            if key == "pv_power_w":
+                if not has_pv_available:
+                    state["pv_available_power_w"] = value
+                continue
             if key not in state:
                 continue
             state[key] = value
@@ -648,6 +673,7 @@ def _simulation_loop(stop_event: threading.Event) -> None:
     capacity_wh = CAPACITY_KWH * 1000.0
     while not stop_event.is_set():
         _read_bess_target_state()
+        _read_pv_target_state()
         with state_lock:
             target = int(state["bess_target_power_w"])
             actual = float(state["bess_active_power_w"])

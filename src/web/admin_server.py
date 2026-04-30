@@ -522,8 +522,14 @@ def _write_manual_override_for_point(point_id: str, duration_minutes: int = 30) 
         if not device_id:
             return
         strategies = _db.fetch_all(
-            "SELECT id FROM strategy_definitions WHERE device_id = %s AND enabled = TRUE",
-            (device_id,),
+            """
+            SELECT DISTINCT sd.id
+            FROM strategy_definitions sd
+            LEFT JOIN strategy_bindings sb ON sb.strategy_id = sd.id
+            WHERE sd.enabled = TRUE
+              AND (sd.device_id = %s OR sb.point_id = %s)
+            """,
+            (device_id, point_id),
         )
         for s in strategies:
             _db.execute(
