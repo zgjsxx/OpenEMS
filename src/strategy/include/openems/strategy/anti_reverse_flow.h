@@ -15,8 +15,8 @@ public:
 
 private:
   core::PointHandle* grid_power_;
-  core::PointHandle* bess_power_;
-  core::PointHandle* bess_run_state_;
+  std::vector<core::PointHandle*> bess_powers_;
+  std::vector<core::PointHandle*> bess_run_states_;
   double prev_target_ = 0.0;
 };
 

@@ -158,6 +158,20 @@ Step 3: PV Curtailment Compensation
 - `pv_power_limit_setpoint`
 - `pv_run_state`
 
+多设备场景下，绑定角色支持使用 `#组标识` 后缀，例如：
+
+- `bess_power#bess-001`
+- `bess_soc#bess-001`
+- `bess_power_setpoint#bess-001`
+- `bess_power#bess-002`
+- `pv_power#pv-001`
+- `pv_power_limit_setpoint#pv-002`
+
+策略引擎会把同一基础角色下的多个设备聚合为站级控制对象：
+
+- BESS 总目标先按站级计算，再按可运行、SOC 合法的设备平均分配
+- PV 限发按统一百分比下发到所有参与该策略的 PV 设备
+
 其中当前三层链路最重要的绑定一般是：
 
 - `grid_power -> grid-active-power`

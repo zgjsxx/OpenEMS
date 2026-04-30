@@ -123,6 +123,9 @@ public:
   // Read next pending command (for collector ControlService)
   // Returns true if a pending command was found
   bool read_pending_command(common::PointId& out_pid, double& out_value);
+  bool read_pending_command_for_points(const std::vector<common::PointId>& point_ids,
+                                       common::PointId& out_pid,
+                                       double& out_value);
 
   // Complete a command: set status and result
   void complete_command(const common::PointId& pid,

@@ -10,6 +10,7 @@
 #include "openems/utils/logger.h"
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cmath>
@@ -312,9 +313,96 @@ static std::string find_binding_point_id(
     const openems::strategy::StrategyDefinition& def,
     const std::string& role) {
   for (const auto& binding : def.bindings) {
-    if (binding.role == role) return binding.point_id;
+    if (binding.role == role ||
+        openems::strategy::binding_role_base(binding.role) == role) {
+      return binding.point_id;
+    }
   }
   return {};
+}
+
+struct BessBindingGroup {
+  std::string key;
+  std::string power_point_id;
+  std::string soc_point_id;
+  std::string run_state_point_id;
+  std::string setpoint_point_id;
+};
+
+struct PvBindingGroup {
+  std::string key;
+  std::string power_point_id;
+  std::string run_state_point_id;
+  std::string limit_setpoint_point_id;
+};
+
+static std::string join_strings(const std::vector<std::string>& values,
+                                const std::string& sep) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) oss << sep;
+    oss << values[i];
+  }
+  return oss.str();
+}
+
+static std::vector<BessBindingGroup> collect_bess_groups(
+    const openems::strategy::StrategyDefinition* def_a,
+    const openems::strategy::StrategyDefinition* def_b) {
+  std::unordered_map<std::string, BessBindingGroup> groups;
+  auto collect = [&](const openems::strategy::StrategyDefinition* def) {
+    if (!def) return;
+    for (const auto& binding : def->bindings) {
+      const std::string base = openems::strategy::binding_role_base(binding.role);
+      if (base != "bess_power" && base != "bess_soc" &&
+          base != "bess_run_state" && base != "bess_power_setpoint") {
+        continue;
+      }
+      const std::string key = openems::strategy::binding_role_group(binding.role);
+      auto& group = groups[key];
+      group.key = key;
+      if (base == "bess_power") group.power_point_id = binding.point_id;
+      if (base == "bess_soc") group.soc_point_id = binding.point_id;
+      if (base == "bess_run_state") group.run_state_point_id = binding.point_id;
+      if (base == "bess_power_setpoint") group.setpoint_point_id = binding.point_id;
+    }
+  };
+  collect(def_a);
+  collect(def_b);
+  std::vector<BessBindingGroup> result;
+  for (auto& entry : groups) result.push_back(entry.second);
+  std::sort(result.begin(), result.end(),
+            [](const BessBindingGroup& a, const BessBindingGroup& b) {
+              return a.key < b.key;
+            });
+  return result;
+}
+
+static std::vector<PvBindingGroup> collect_pv_groups(
+    const openems::strategy::StrategyDefinition* def) {
+  std::unordered_map<std::string, PvBindingGroup> groups;
+  if (def) {
+    for (const auto& binding : def->bindings) {
+      const std::string base = openems::strategy::binding_role_base(binding.role);
+      if (base != "pv_power" && base != "pv_run_state" &&
+          base != "pv_power_limit_setpoint") {
+        continue;
+      }
+      const std::string key = openems::strategy::binding_role_group(binding.role);
+      auto& group = groups[key];
+      group.key = key;
+      if (base == "pv_power") group.power_point_id = binding.point_id;
+      if (base == "pv_run_state") group.run_state_point_id = binding.point_id;
+      if (base == "pv_power_limit_setpoint") group.limit_setpoint_point_id = binding.point_id;
+    }
+  }
+  std::vector<PvBindingGroup> result;
+  for (auto& entry : groups) result.push_back(entry.second);
+  std::sort(result.begin(), result.end(),
+            [](const PvBindingGroup& a, const PvBindingGroup& b) {
+              return a.key < b.key;
+            });
+  return result;
 }
 
 static bool read_point_value(openems::rt_db::RtDb* rt_db,
@@ -548,6 +636,11 @@ int main(int argc, char* argv[]) {
       double pv_target_limit_pct = 100.0;
       bool pv_command_submitted = false;
       std::string pv_submit_message;
+      const auto bess_groups = collect_bess_groups(
+          arf_strategy ? &arf_strategy->def : nullptr,
+          soc_strategy ? &soc_strategy->def : nullptr);
+      const auto pv_groups = collect_pv_groups(
+          arf_strategy ? &arf_strategy->def : nullptr);
 
       // Step 1: Anti-reverse-flow calculates target only.
       if (arf) {
@@ -594,10 +687,6 @@ int main(int argc, char* argv[]) {
       if (arf) {
         if (arf_strategy && arf_strategy->params.enable_pv_curtailment) {
           auto& pv_runtime = pv_recovery_state[arf_strategy->def.id];
-          pv_setpoint_id = find_binding_point_id(arf_strategy->def, "pv_power_limit_setpoint");
-          std::string pv_power_id = find_binding_point_id(arf_strategy->def, "pv_power");
-          std::string pv_run_state_id = find_binding_point_id(arf_strategy->def, "pv_run_state");
-
           double grid_power_kw = 0.0;
           std::string read_error;
           if (read_point_value(rt_db, find_binding_point_id(arf_strategy->def, "grid_power"),
@@ -608,27 +697,58 @@ int main(int argc, char* argv[]) {
                 arf_suppressed &&
                 arf_suppress_reason.find("BESS not running") != std::string::npos;
 
-            bool pv_running = true;
-            if (!pv_run_state_id.empty()) {
-              double pv_run_state = 0.0;
-              if (!read_point_value(rt_db, pv_run_state_id, pv_run_state, read_error)) {
-                pv_running = false;
-              } else {
-                pv_running = std::abs(pv_run_state) > 1e-6;
+            bool pv_running = false;
+            double total_pv_power_kw = 0.0;
+            double current_limit_sum = 0.0;
+            int current_limit_count = 0;
+            std::vector<std::string> pv_setpoint_ids;
+
+            for (const auto& pv_group : pv_groups) {
+              bool group_running = true;
+              if (!pv_group.run_state_point_id.empty()) {
+                double pv_run_state = 0.0;
+                if (!read_point_value(rt_db, pv_group.run_state_point_id, pv_run_state, read_error)) {
+                  group_running = false;
+                } else {
+                  group_running = std::abs(pv_run_state) > 1e-6;
+                }
+              }
+              if (!group_running) {
+                continue;
+              }
+              pv_running = true;
+
+              if (!pv_group.limit_setpoint_point_id.empty()) {
+                pv_setpoint_ids.push_back(pv_group.limit_setpoint_point_id);
+                double current_limit = arf_strategy->params.pv_limit_max_pct;
+                if (read_point_value(rt_db, pv_group.limit_setpoint_point_id, current_limit, read_error)) {
+                  current_limit_sum += current_limit;
+                  ++current_limit_count;
+                }
+              }
+
+              if (!pv_group.power_point_id.empty()) {
+                double current_pv_power_value = 0.0;
+                if (read_point_value(rt_db, pv_group.power_point_id, current_pv_power_value, read_error)) {
+                  double current_pv_power_kw = current_pv_power_value;
+                  if (std::abs(current_pv_power_kw) >
+                      (arf_strategy->params.pv_rated_power_kw * 2.0)) {
+                    current_pv_power_kw /= 1000.0;
+                  }
+                  total_pv_power_kw += current_pv_power_kw;
+                }
               }
             }
 
-            if (pv_running && !pv_setpoint_id.empty() &&
+            if (pv_running && !pv_setpoint_ids.empty() &&
                 arf_strategy->params.pv_rated_power_kw > 0.0) {
-              double current_limit_pct = arf_strategy->params.pv_limit_max_pct;
-              double current_pv_power_value = 0.0;
-              read_point_value(rt_db, pv_setpoint_id, current_limit_pct, read_error);
-              if (read_point_value(rt_db, pv_power_id, current_pv_power_value, read_error)) {
-                double current_pv_power_kw = current_pv_power_value;
-                if (std::abs(current_pv_power_kw) >
-                    (arf_strategy->params.pv_rated_power_kw * 2.0)) {
-                  current_pv_power_kw /= 1000.0;
-                }
+              pv_setpoint_id = join_strings(pv_setpoint_ids, ",");
+              double current_limit_pct =
+                  current_limit_count > 0
+                      ? (current_limit_sum / static_cast<double>(current_limit_count))
+                      : arf_strategy->params.pv_limit_max_pct;
+              {
+                double current_pv_power_kw = total_pv_power_kw;
                 const double min_limit =
                     (arf_strategy->params.pv_limit_min_pct > 0.0)
                         ? arf_strategy->params.pv_limit_min_pct
@@ -657,10 +777,18 @@ int main(int argc, char* argv[]) {
 
                   if (std::abs(desired_limit_pct - current_limit_pct) > 0.1) {
                     pv_target_limit_pct = desired_limit_pct;
-                    auto [submitted, submit_message] = submit_target(
-                        rt_db, pv_setpoint_id, pv_target_limit_pct, 0.2);
-                    pv_command_submitted = submitted;
-                    pv_submit_message = submit_message;
+                    int submit_ok_count = 0;
+                    std::vector<std::string> submit_parts;
+                    for (const auto& setpoint_id : pv_setpoint_ids) {
+                      auto [submitted, submit_message] = submit_target(
+                          rt_db, setpoint_id, pv_target_limit_pct, 0.2);
+                      if (submitted || submit_message == "debounced") {
+                        ++submit_ok_count;
+                      }
+                      submit_parts.push_back(setpoint_id + ":" + submit_message);
+                    }
+                    pv_command_submitted = submit_ok_count > 0;
+                    pv_submit_message = join_strings(submit_parts, ";");
                   } else {
                     pv_target_limit_pct = current_limit_pct;
                     pv_submit_message = "debounced";
@@ -699,10 +827,18 @@ int main(int argc, char* argv[]) {
                       if (pv_target_limit_pct > max_limit) {
                         pv_target_limit_pct = max_limit;
                       }
-                      auto [submitted, submit_message] = submit_target(
-                          rt_db, pv_setpoint_id, pv_target_limit_pct, 0.2);
-                      pv_command_submitted = submitted;
-                      pv_submit_message = submit_message;
+                      int submit_ok_count = 0;
+                      std::vector<std::string> submit_parts;
+                      for (const auto& setpoint_id : pv_setpoint_ids) {
+                        auto [submitted, submit_message] = submit_target(
+                            rt_db, setpoint_id, pv_target_limit_pct, 0.2);
+                        if (submitted || submit_message == "debounced") {
+                          ++submit_ok_count;
+                        }
+                        submit_parts.push_back(setpoint_id + ":" + submit_message);
+                      }
+                      pv_command_submitted = submit_ok_count > 0;
+                      pv_submit_message = join_strings(submit_parts, ";");
                       pv_recovery_active = true;
                       pv_action_reason = "PV curtailment recovering toward 100%";
                       input_summary << " | PV:recover="
@@ -733,7 +869,81 @@ int main(int argc, char* argv[]) {
           }
         }
 
-        auto [submitted, submit_message] = submit_target(rt_db, arf_setpoint_id, final_target, 0.1);
+        bool submitted = false;
+        std::string submit_message;
+        double applied_bess_target = final_target;
+        std::vector<std::string> bess_target_point_ids;
+
+        if (!bess_groups.empty()) {
+          std::vector<BessBindingGroup> eligible_bess_groups;
+          std::string read_error;
+          for (const auto& group : bess_groups) {
+            if (group.setpoint_point_id.empty()) continue;
+
+            bool running = true;
+            if (!group.run_state_point_id.empty()) {
+              double run_state = 0.0;
+              if (!read_point_value(rt_db, group.run_state_point_id, run_state, read_error) ||
+                  std::abs(run_state) < 1e-6) {
+                running = false;
+              }
+            }
+            if (!running) continue;
+
+            bool eligible = true;
+            if (!group.soc_point_id.empty()) {
+              double soc_value = 0.0;
+              if (read_point_value(rt_db, group.soc_point_id, soc_value, read_error)) {
+                if (soc_strategy && final_target < 0.0 &&
+                    soc_value >= soc_strategy->params.soc_high) {
+                  eligible = false;
+                }
+                if (soc_strategy && final_target > 0.0 &&
+                    soc_value <= soc_strategy->params.soc_low) {
+                  eligible = false;
+                }
+              }
+            }
+            if (eligible) eligible_bess_groups.push_back(group);
+          }
+
+          if (!eligible_bess_groups.empty()) {
+            const double per_device_target =
+                final_target / static_cast<double>(eligible_bess_groups.size());
+            std::vector<std::string> submit_parts;
+            int submit_ok_count = 0;
+            applied_bess_target = 0.0;
+            for (const auto& group : eligible_bess_groups) {
+              auto [group_submitted, group_message] = submit_target(
+                  rt_db, group.setpoint_point_id, per_device_target, 0.1);
+              if (group_submitted || group_message == "debounced") {
+                ++submit_ok_count;
+              }
+              submit_parts.push_back(group.setpoint_point_id + ":" + group_message);
+              bess_target_point_ids.push_back(group.setpoint_point_id);
+              applied_bess_target += per_device_target;
+            }
+            submitted = submit_ok_count > 0;
+            submit_message = join_strings(submit_parts, ";");
+          } else {
+            applied_bess_target = 0.0;
+            submit_message = "no eligible BESS setpoint available";
+            if (std::abs(final_target) > 1e-6 && !final_suppressed) {
+              final_suppressed = true;
+              final_suppress_reason = submit_message;
+            }
+          }
+        } else {
+          auto submit_result = submit_target(rt_db, arf_setpoint_id, final_target, 0.1);
+          submitted = submit_result.first;
+          submit_message = submit_result.second;
+          if (!arf_setpoint_id.empty()) {
+            bess_target_point_ids.push_back(arf_setpoint_id);
+          }
+        }
+
+        final_target = applied_bess_target;
+        target_point_id = join_strings(bess_target_point_ids, ",");
         if (submitted) {
           input_summary << ",sent=1,cmd=" << submit_message;
         } else {
@@ -760,14 +970,14 @@ int main(int argc, char* argv[]) {
         arf->mark_target_applied(final_target);
         update_runtime_state(db, arf->definition().id,
                              pv_action_active || pv_recovery_active ? pv_target_limit_pct : final_target,
-                             pv_action_active || pv_recovery_active ? pv_setpoint_id : arf_setpoint_id,
+                             pv_action_active || pv_recovery_active ? pv_setpoint_id : target_point_id,
                              final_suppressed,
                              final_suppress_reason,
                              input_summary.str(), "");
         write_action_log(db, arf->definition().id,
                          pv_action_active ? "pv_curtailment" :
                          (pv_recovery_active ? "pv_recovery" : (submitted ? "command" : "suppress")),
-                         pv_action_active || pv_recovery_active ? pv_setpoint_id : arf_setpoint_id,
+                         pv_action_active || pv_recovery_active ? pv_setpoint_id : target_point_id,
                          pv_action_active || pv_recovery_active ? pv_target_limit_pct : final_target,
                          0.0,
                          final_suppress_reason,
@@ -779,13 +989,13 @@ int main(int argc, char* argv[]) {
 
         if (soc) {
           update_runtime_state(db, soc->definition().id,
-                               final_target, arf_setpoint_id,
+                               final_target, target_point_id,
                                soc_runtime_suppressed,
                                soc_runtime_reason,
                                input_summary.str(), "");
           write_action_log(db, soc->definition().id,
                            submitted ? "command" : "suppress",
-                           arf_setpoint_id,
+                           target_point_id,
                            final_target, 0.0,
                            soc_runtime_reason,
                            input_summary.str(),

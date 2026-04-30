@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Run the first anti-reverse-flow / SOC protection E2E validation chain."""
+"""Run multi-device anti-reverse-flow / SOC protection E2E validation."""
 
 from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 from typing import Any, Dict, List
@@ -37,8 +35,7 @@ class HttpClient:
             raw = resp.read()
             if not raw:
                 return None
-            text = raw.decode("utf-8")
-            return json.loads(text)
+            return json.loads(raw.decode("utf-8"))
 
 
 def log(message: str) -> None:
@@ -62,15 +59,12 @@ def wait_until(label: str, predicate, timeout: float = TIMEOUT, interval: float 
 
 
 def login(client: HttpClient) -> None:
-    log("Logging into admin portal...")
-    payload = {"username": USERNAME, "password": PASSWORD}
-    result = client.request("POST", f"{BASE_URL}/api/auth/login", payload)
+    result = client.request("POST", f"{BASE_URL}/api/auth/login", {"username": USERNAME, "password": PASSWORD})
     if not result or not result.get("ok"):
         raise RuntimeError(f"Login failed: {result}")
 
 
 def simulator_reset(client: HttpClient) -> Dict[str, Any]:
-    log("Resetting simulator state...")
     return client.request("POST", f"{SIM_URL}/reset", {}) or {}
 
 
@@ -111,7 +105,6 @@ def wait_point_valid(client: HttpClient, point_id: str) -> Dict[str, Any]:
         if point and point.get("valid"):
             return snap
         return None
-
     return wait_until(f"point {point_id} becomes valid", _probe, timeout=TIMEOUT, interval=1.0)
 
 
@@ -120,9 +113,7 @@ def wait_condition(label: str, client: HttpClient, predicate, timeout: float = T
         snap = get_snapshot(client)
         runtime = get_strategy_runtime(client)
         logs = get_strategy_logs(client)
-        result = predicate(snap, runtime, logs)
-        return (snap, runtime, logs) if result else None
-
+        return (snap, runtime, logs) if predicate(snap, runtime, logs) else None
     return wait_until(label, _probe, timeout=timeout, interval=interval)
 
 
@@ -133,87 +124,111 @@ def find_runtime(rows: List[Dict[str, Any]], strategy_id: str) -> Dict[str, Any]
     raise RuntimeError(f"Strategy runtime row not found: {strategy_id}")
 
 
+def sum_points(snapshot: Dict[str, Any], *point_ids: str) -> float:
+    return sum(read_point(snapshot, point_id) for point_id in point_ids)
+
+
 def assert_anti_reverse_flow(app_client: HttpClient, sim_client: HttpClient) -> None:
-    log("Running anti-reverse-flow scenario at SOC=50%...")
+    log("Running multi-device anti-reverse-flow scenario...")
     simulator_patch(
         sim_client,
         {
             "bess_soc_pct": 50.0,
+            "bess2_soc_pct": 55.0,
             "bess_active_power_w": 0,
+            "bess2_active_power_w": 0,
             "bess_target_power_w": 0,
-            "pv_available_power_w": 36000,
+            "bess2_target_power_w": 0,
+            "pv_available_power_w": 18000,
+            "pv2_available_power_w": 18000,
             "load_power_w": 10000,
             "bess_started": True,
+            "bess2_started": True,
             "bess_run_mode": 1,
+            "bess2_run_mode": 1,
             "bess_grid_state": 0,
+            "bess2_grid_state": 0,
         },
     )
 
     snap, runtime, logs = wait_condition(
         "anti reverse flow reaches charging state",
         app_client,
-        lambda s, r, _l: read_point(s, "bess-target-power") < -5.0 and abs(read_point(s, "grid-active-power")) < 5.0,
+        lambda s, r, _l: sum_points(s, "bess-target-power", "bess2-target-power") < -5.0
+        and abs(read_point(s, "grid-active-power")) < 5.0,
         timeout=90,
         interval=2.0,
     )
 
-    bess_target_kw = read_point(snap, "bess-target-power")
+    total_bess_target_kw = sum_points(snap, "bess-target-power", "bess2-target-power")
     grid_power_kw = read_point(snap, "grid-active-power")
     arf_runtime = find_runtime(runtime, "e2e-anti-reverse-flow")
-    log(f"Anti-reverse-flow OK: bess-target-power={bess_target_kw:.2f} kW, grid-active-power={grid_power_kw:.2f} kW")
+    log(
+        f"Anti-reverse-flow OK: total-bess-target={total_bess_target_kw:.2f} kW, "
+        f"grid-active-power={grid_power_kw:.2f} kW"
+    )
     log(f"ARF runtime: suppressed={arf_runtime.get('suppressed')} reason={arf_runtime.get('suppress_reason')}")
     if not any(row.get("strategy_id") == "e2e-anti-reverse-flow" for row in logs):
         raise RuntimeError("No anti-reverse-flow action log found.")
 
 
 def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
-    log("Running SOC high clamp with PV curtailment scenario at SOC=90%...")
+    log("Running multi-device SOC high clamp with PV curtailment scenario...")
     simulator_patch(
         sim_client,
         {
             "bess_soc_pct": 90.0,
+            "bess2_soc_pct": 92.0,
             "bess_active_power_w": 0,
+            "bess2_active_power_w": 0,
             "bess_target_power_w": 0,
-            "pv_available_power_w": 36000,
+            "bess2_target_power_w": 0,
+            "pv_available_power_w": 18000,
+            "pv2_available_power_w": 18000,
             "load_power_w": 10000,
             "bess_started": True,
+            "bess2_started": True,
             "bess_run_mode": 1,
+            "bess2_run_mode": 1,
             "bess_grid_state": 0,
+            "bess2_grid_state": 0,
         },
     )
 
     snap, runtime, logs = wait_condition(
         "soc high clamp hands over to pv curtailment",
         app_client,
-        lambda s, r, l: abs(read_point(s, "bess-target-power")) < 0.25
-        and abs(read_point(s, "bess-active-power")) < 0.25
+        lambda s, r, l: abs(sum_points(s, "bess-target-power", "bess2-target-power")) < 0.5
+        and abs(sum_points(s, "bess-active-power", "bess2-active-power")) < 0.5
         and read_point(s, "pv-target-power-limit") < 99.5
+        and read_point(s, "pv2-target-power-limit") < 99.5
         and abs(read_point(s, "grid-active-power")) < 5.0
         and any(
             row.get("strategy_id") == "e2e-soc-protection"
-            and str(row.get("suppress_reason") or "").find("charge suppressed") >= 0
+            and "charge suppressed" in str(row.get("suppress_reason") or "")
             for row in r
         )
         and any(
             row.get("strategy_id") == "e2e-anti-reverse-flow"
-            and row.get("target_point_id") == "pv-target-power-limit"
+            and "pv-target-power-limit" in str(row.get("target_point_id") or "")
             for row in l
         ),
         timeout=90,
         interval=2.0,
     )
 
-    bess_target_kw = read_point(snap, "bess-target-power")
-    bess_actual_kw = read_point(snap, "bess-active-power")
+    total_bess_target_kw = sum_points(snap, "bess-target-power", "bess2-target-power")
+    total_bess_actual_kw = sum_points(snap, "bess-active-power", "bess2-active-power")
     grid_power_kw = read_point(snap, "grid-active-power")
-    pv_limit_pct = read_point(snap, "pv-target-power-limit")
+    pv1_limit_pct = read_point(snap, "pv-target-power-limit")
+    pv2_limit_pct = read_point(snap, "pv2-target-power-limit")
     soc_runtime = find_runtime(runtime, "e2e-soc-protection")
     arf_runtime = find_runtime(runtime, "e2e-anti-reverse-flow")
     log(
         "SOC clamp + PV curtailment OK: "
-        f"bess-target-power={bess_target_kw:.2f} kW, "
-        f"bess-active-power={bess_actual_kw:.2f} kW, "
-        f"pv-target-power-limit={pv_limit_pct:.2f} %, "
+        f"total-bess-target={total_bess_target_kw:.2f} kW, "
+        f"total-bess-active={total_bess_actual_kw:.2f} kW, "
+        f"pv1-limit={pv1_limit_pct:.2f} %, pv2-limit={pv2_limit_pct:.2f} %, "
         f"grid-active-power={grid_power_kw:.2f} kW"
     )
     log(f"SOC runtime: suppressed={soc_runtime.get('suppressed')} reason={soc_runtime.get('suppress_reason')}")
@@ -223,7 +238,6 @@ def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
 def main() -> int:
     app = HttpClient()
     sim = HttpClient()
-
     try:
         wait_until(
             "simulator HTTP becomes ready",

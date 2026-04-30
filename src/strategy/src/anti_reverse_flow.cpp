@@ -10,15 +10,13 @@ namespace openems::strategy {
 AntiReverseFlow::AntiReverseFlow(StrategyDefinition def, StrategyParams params,
                                  rt_db::RtDb* rtdb)
     : StrategyBase(std::move(def), params, rtdb)
-    , grid_power_(nullptr)
-    , bess_power_(nullptr)
-    , bess_run_state_(nullptr) {
+    , grid_power_(nullptr) {
   for (auto& ph : point_handles_) {
     for (const auto& b : def_.bindings) {
       if (b.point_id == ph->point_id()) {
         if (b.role == "grid_power") grid_power_ = ph.get();
-        if (b.role == "bess_power") bess_power_ = ph.get();
-        if (b.role == "bess_run_state") bess_run_state_ = ph.get();
+        if (binding_role_base(b.role) == "bess_power") bess_powers_.push_back(ph.get());
+        if (binding_role_base(b.role) == "bess_run_state") bess_run_states_.push_back(ph.get());
       }
     }
   }
@@ -77,21 +75,35 @@ StrategyExecutionResult AntiReverseFlow::calculate_target() {
   double p_grid = grid_result.value();
   double p_bess = prev_target_;
 
-  if (bess_power_) {
-    auto bess_result = bess_power_->read_value();
-    if (bess_result.is_ok() && bess_power_->is_valid()) {
-      p_bess = bess_result.value();
+  if (!bess_powers_.empty()) {
+    double total_bess_power = 0.0;
+    bool has_bess_power = false;
+    for (auto* bess_power : bess_powers_) {
+      auto bess_result = bess_power->read_value();
+      if (bess_result.is_ok() && bess_power->is_valid()) {
+        total_bess_power += bess_result.value();
+        has_bess_power = true;
+      }
+    }
+    if (has_bess_power) {
+      p_bess = total_bess_power;
     }
   }
 
-  if (bess_run_state_) {
-    auto run_result = bess_run_state_->read_value();
-    if (run_result.is_ok() && bess_run_state_->is_valid()) {
-      if (run_result.value() == 0.0) {
-        result.suppressed = true;
-        result.suppress_reason = "BESS not running (run_state=0)";
-        return result;
+  if (!bess_run_states_.empty()) {
+    bool any_running = false;
+    for (auto* bess_run_state : bess_run_states_) {
+      auto run_result = bess_run_state->read_value();
+      if (run_result.is_ok() && bess_run_state->is_valid() &&
+          std::abs(run_result.value()) > 1e-6) {
+        any_running = true;
+        break;
       }
+    }
+    if (!any_running) {
+      result.suppressed = true;
+      result.suppress_reason = "BESS not running (all run_state=0)";
+      return result;
     }
   }
 

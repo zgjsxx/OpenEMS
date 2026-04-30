@@ -20,7 +20,7 @@ StrategyBase::StrategyBase(StrategyDefinition def, StrategyParams params,
 
 common::PointId StrategyBase::find_binding(const std::string& role) const {
   for (const auto& b : def_.bindings) {
-    if (b.role == role) return b.point_id;
+    if (b.role == role || binding_role_base(b.role) == role) return b.point_id;
   }
   return {};
 }

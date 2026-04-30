@@ -1,11 +1,18 @@
 id,target_type,target_id,point_id,role,label
-pv-power,node,pv-001-node,pv-active-power,power,Active Power
-pv-voltage,node,pv-001-node,pv-voltage,voltage,Voltage
-pv-current,node,pv-001-node,pv-current,current,Current
-pv-status,node,pv-001-node,pv-running-status,status,Running Status
-bess-soc,node,bess-001-node,bess-soc,soc,SOC
-bess-power,node,bess-001-node,bess-active-power,power,Active Power
-bess-grid-state,node,bess-001-node,bess-grid-state,status,Grid State
+pv1-power,node,pv-001-node,pv-active-power,power,Active Power
+pv1-voltage,node,pv-001-node,pv-voltage,voltage,Voltage
+pv1-current,node,pv-001-node,pv-current,current,Current
+pv1-status,node,pv-001-node,pv-running-status,status,Running Status
+pv2-power,node,pv-002-node,pv2-active-power,power,Active Power
+pv2-voltage,node,pv-002-node,pv2-voltage,voltage,Voltage
+pv2-current,node,pv-002-node,pv2-current,current,Current
+pv2-status,node,pv-002-node,pv2-running-status,status,Running Status
+bess1-soc,node,bess-001-node,bess-soc,soc,SOC
+bess1-power,node,bess-001-node,bess-active-power,power,Active Power
+bess1-grid-state,node,bess-001-node,bess-grid-state,status,Grid State
+bess2-soc,node,bess-002-node,bess2-soc,soc,SOC
+bess2-power,node,bess-002-node,bess2-active-power,power,Active Power
+bess2-grid-state,node,bess-002-node,bess2-grid-state,status,Grid State
 grid-power,node,grid-incomer,grid-active-power,power,Grid Power
 grid-frequency,node,grid-incomer,grid-frequency,voltage,Frequency
 grid-voltage,node,grid-incomer,grid-voltage,voltage,Voltage

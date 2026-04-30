@@ -1,6 +1,9 @@
 id,device_id,name,code,data_type,unit,writable
 pv-running-status,pv-001,Running Status,PV_RUN,uint16,,false
+pv2-running-status,pv-002,Running Status,PV2_RUN,uint16,,false
 bess-grid-state,bess-001,Grid State,BESS_GRID,uint16,,false
 bess-run-mode,bess-001,Run Mode,BESS_MODE,uint16,,true
+bess2-grid-state,bess-002,Grid State,BESS2_GRID,uint16,,false
+bess2-run-mode,bess-002,Run Mode,BESS2_MODE,uint16,,true
 grid-on-off-status,grid-001,On/Off Grid Status,GRID_STATE,uint16,,false
 grid-switch-position,grid-001,Switch Position,GRID_SW,uint16,,false

@@ -12,7 +12,18 @@ DeviceControlTask::DeviceControlTask(
     rt_db::RtDb* rtdb)
     : device_(std::move(device)),
       client_(std::move(client)),
-      rtdb_(rtdb) {}
+      rtdb_(rtdb) {
+  for (const auto& point : device_->points()) {
+    if (!point) {
+      continue;
+    }
+    if (!point->writable() || !point->has_modbus_mapping()) {
+      continue;
+    }
+    controlled_points_[point->id()] = point;
+    controlled_point_ids_.push_back(point->id());
+  }
+}
 
 DeviceControlTask::DeviceControlTask(
     model::DevicePtr device,
@@ -20,7 +31,26 @@ DeviceControlTask::DeviceControlTask(
     rt_db::RtDb* rtdb)
     : device_(std::move(device)),
       client_(std::static_pointer_cast<modbus::IModbusClient>(tcp_client)),
-      rtdb_(rtdb) {}
+      rtdb_(rtdb) {
+  for (const auto& point : device_->points()) {
+    if (!point) {
+      continue;
+    }
+    if (!point->writable() || !point->has_modbus_mapping()) {
+      continue;
+    }
+    controlled_points_[point->id()] = point;
+    controlled_point_ids_.push_back(point->id());
+  }
+}
+
+model::PointPtr DeviceControlTask::find_controlled_point(const common::PointId& pid) const {
+  const auto it = controlled_points_.find(pid);
+  if (it == controlled_points_.end()) {
+    return nullptr;
+  }
+  return it->second;
+}
 
 uint8_t DeviceControlTask::read_back_fc(uint8_t write_fc) {
   switch (write_fc) {
@@ -35,19 +65,11 @@ common::VoidResult DeviceControlTask::execute_pending_commands() {
   common::PointId pid;
   double desired_value;
 
-  while (rtdb_->read_pending_command(pid, desired_value)) {
-    // Find the point in our device
-    model::PointPtr target_point = nullptr;
-    for (auto& pt : device_->points()) {
-      if (pt->id() == pid) {
-        target_point = pt;
-        break;
-      }
-    }
+  while (rtdb_->read_pending_command_for_points(controlled_point_ids_, pid, desired_value)) {
+    model::PointPtr target_point = find_controlled_point(pid);
 
     if (!target_point) {
       OPENEMS_LOG_W("ControlTask", "Command point not found in device: " + pid);
-      rtdb_->complete_command(pid, rt_db::CommandFailed, 0.0, 1);
       continue;
     }
 

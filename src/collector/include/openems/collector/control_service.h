@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include "openems/common/types.h"
 #include "openems/common/result.h"
 #include "openems/common/base_interface.h"
@@ -42,10 +43,13 @@ private:
   common::VoidResult execute_write(const common::PointId& pid,
                                     double desired_value,
                                     const model::ModbusPointMapping& mapping);
+  model::PointPtr find_controlled_point(const common::PointId& pid) const;
 
   model::DevicePtr device_;
   modbus::IModbusClientPtr client_;
   rt_db::RtDb* rtdb_;
+  std::unordered_map<common::PointId, model::PointPtr> controlled_points_;
+  std::vector<common::PointId> controlled_point_ids_;
 };
 
 using DeviceControlTaskPtr = std::shared_ptr<DeviceControlTask>;

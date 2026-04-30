@@ -26,10 +26,24 @@ inline std::string strategy_type_to_string(StrategyType t) {
   return "unknown";
 }
 
+inline std::string binding_role_base(const std::string& role) {
+  auto pos = role.find('#');
+  if (pos == std::string::npos) return role;
+  return role.substr(0, pos);
+}
+
+inline std::string binding_role_group(const std::string& role) {
+  auto pos = role.find('#');
+  if (pos == std::string::npos || pos + 1 >= role.size()) return "default";
+  return role.substr(pos + 1);
+}
+
 struct StrategyBinding {
   std::string role;     // "grid_power", "bess_power", "bess_soc", "bess_run_state",
                         // "bess_power_setpoint", "pv_power", "pv_power_limit_setpoint",
-                        // "pv_run_state"
+                        // "pv_run_state". For multi-device strategies a suffix can
+                        // be appended as "role#group", for example:
+                        // "bess_power#bess-001", "bess_soc#bess-002".
   common::PointId point_id;
 };
 

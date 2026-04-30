@@ -22,9 +22,9 @@ public:
   SocClampResult clamp(double target_kw);
 
 private:
-  core::PointHandle* bess_soc_;
-  core::PointHandle* bess_power_;
-  core::PointHandle* bess_run_state_;
+  std::vector<core::PointHandle*> bess_socs_;
+  std::vector<core::PointHandle*> bess_powers_;
+  std::vector<core::PointHandle*> bess_run_states_;
 };
 
 } // namespace openems::strategy

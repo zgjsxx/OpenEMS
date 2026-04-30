@@ -527,6 +527,33 @@ bool RtDb::read_pending_command(common::PointId& out_pid, double& out_value) {
   return false;
 }
 
+bool RtDb::read_pending_command_for_points(
+    const std::vector<common::PointId>& point_ids,
+    common::PointId& out_pid,
+    double& out_value) {
+  std::lock_guard lock(process_mutex_);
+
+  for (uint32_t i = 0; i < header_->command_count; ++i) {
+    auto& slot = command_slots_[i];
+    if (slot.status != CommandPending) {
+      continue;
+    }
+
+    std::string pid(slot.point_id, kMaxPointIdLen);
+    pid.erase(pid.find('\0'));
+    if (std::find(point_ids.begin(), point_ids.end(), pid) == point_ids.end()) {
+      continue;
+    }
+
+    out_pid = pid;
+    out_value = slot.desired_value;
+    slot.status = CommandExecuting;
+    return true;
+  }
+
+  return false;
+}
+
 void RtDb::complete_command(const common::PointId& pid,
                              CommandStatus status,
                              double result_value,
