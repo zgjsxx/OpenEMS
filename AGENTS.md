@@ -1,121 +1,101 @@
 # AGENTS.md
 
-本文档用于给 Codex 一类代码代理提供最小但足够的项目上下文，帮助其在本仓库中更安全、更高效地协作。
+本文档为代码代理提供当前仓库的最小项目上下文。
 
 ## 项目概览
 
-OpenEMS 是一个基于 CMake 构建的 C++17 能源管理 / 遥测采集项目。
+OpenEMS 是一个基于 CMake 构建的 C++17 能源管理 / 遥测采集项目，当前已包含：
 
-从当前仓库结构看，已经实现或较完整的模块主要包括：
-
-- `src/common`：公共类型、常量、错误码、线程安全队列、基础接口
+- `src/common`：公共类型、错误码、并发工具
 - `src/utils`：日志与时间工具
-- `src/model`：站点、设备、点位及映射模型
-- `src/config`：基于 CSV 的配置加载
-- `src/modbus`：Modbus TCP 客户端与数据解析
-- `src/iec104`：IEC 104 客户端与 ASDU 处理
+- `src/model`：站点、设备、点位模型
+- `src/config`：配置装载与 PostgreSQL 配置读取
+- `src/modbus`：Modbus TCP 通讯
+- `src/iec104`：IEC 104 通讯
 - `src/collector`：轮询与控制服务
-- `src/strategy`：防逆流与 SOC 保护策略引擎
-- `src/rt_db`：实时数据库层
+- `src/strategy`：策略算法
+- `src/rt_db`：实时库与共享内存表空间
 - `src/apps`：可执行程序入口
-- `src/web`：Python FastAPI 运维后台（登录认证、配置管理、告警管理、历史查询、拓扑展示、策略管理、系统监控、用户权限与审计日志）
-
-仓库中也存在一些目录已创建但暂未完全接入或尚在演进中，例如：
-
-- `src/alarm`
-- `src/control`
-- `src/core`
+- `src/web`：FastAPI 运维后台
 
 ## 构建系统
 
-当前主要构建方式：
-
 - `CMake >= 3.16`
 - `C++17`
-- Windows 下预计使用 Visual Studio 或 Ninja 生成器
 
-常用本地构建命令：
+Windows 常用构建命令：
 
 ```powershell
 cmake -S . -B build
 cmake --build build
 ```
 
-构建产物默认输出到：
-
-- `build/bin`
-- `build/lib`
-
-构建过程中会将 `config/` 目录复制到构建目录，供运行时使用。
-
 ## 主要可执行程序
 
-当前 `src/apps/CMakeLists.txt` 中定义了以下可执行文件：
-
+- `openems-rtdb-service`
 - `openems-modbus-collector`
-- `openems-viewer`
-- `openems-alarm`
 - `openems-iec104-collector`
+- `openems-history`
+- `openems-alarm`
+- `openems-strategy-engine`
+- `openems-viewer`
 
-如果任务涉及运行时行为修改，优先检查对应的入口文件：
+## 配置与持久化
 
-- `src/apps/src/collector_main.cpp`
-- `src/apps/src/viewer_main.cpp`
-- `src/apps/src/alarm_main.cpp`
-- `src/apps/src/iec104_collector_main.cpp`
+当前运行时配置统一存放在 PostgreSQL 结构化表中，初始化通过 SQL migration / seed 完成。
 
-## 配置数据
+不再依赖 `config/tables` 下的 CSV 文件作为运行时配置源。
 
-当前运行时 CSV 配置位于：
+主要结构化配置表：
 
-- `config/tables/device.csv`
-- `config/tables/ems_config.csv`
-- `config/tables/iec104_mapping.csv`
-- `config/tables/modbus_mapping.csv`
-- `config/tables/teleadjust.csv`
-- `config/tables/site.csv`
-- `config/tables/telecontrol.csv`
-- `config/tables/teleindication.csv`
-- `config/tables/telemetry.csv`
+- `sites`
+- `ems_config`
+- `devices`
+- `points`
+- `modbus_mappings`
+- `iec104_mappings`
+- `alarm_rules`
+- `topology_nodes`
+- `topology_links`
+- `topology_bindings`
 
-如果调整 CSV 字段、格式或语义，需要同步检查 `src/config` 中的加载逻辑。
+## RtDb
 
-## 测试现状
+RtDb 已演进为按表拆分的共享内存表空间，核心表包括：
 
-仓库中存在 `tests/` 目录结构，但从当前已检出的顶层构建文件来看，还没有看到完整接入的统一测试入口。
+- `catalog`
+- `point_index`
+- `telemetry`
+- `teleindication`
+- `command`
+- `strategy_runtime`
+- `alarm_active`
 
-对代理的建议：
+如果任务涉及实时库，请优先检查：
 
-- 如果目标模块已经有可运行的测试目标，优先补充或更新针对性测试。
-- 如果当前没有现成可运行测试入口，至少构建受影响目标，并在最终说明里明确指出测试覆盖缺口。
+- `src/rt_db/include/openems/rt_db/rt_db_layout.h`
+- `src/rt_db/include/openems/rt_db/rt_db.h`
+- `src/rt_db/src/rt_db.cpp`
+- `src/web/shm_reader.py`
+
+## 测试建议
+
+- 优先补充或更新受影响模块的单元测试
+- 至少构建受影响目标
+- 若涉及 RtDb / Docker / Web 联调，尽量补一轮最小闭环验证
 
 ## 协作约定
 
-- 优先做小而聚焦的模块内修改，避免无关的大范围重构。
-- 修改实现时，保持对应公开头文件与 `src/` 中实现同步。
-- 默认延续现有 C++17 风格、命名方式和模块边界，除非任务明确要求整理风格。
-- 涉及协议解析、点表映射、配置装载时，要结合 `config/tables` 中的 CSV 一起核对。
-- 涉及 Windows 网络功能时，注意部分模块依赖平台库，例如 `ws2_32`。
-
-## 当前仓库的几个现实情况
-
-在做较大修改前，建议先注意以下几点：
-
-- 顶层 `CMakeLists.txt` 当前只接入了 `src/` 下的一部分模块，目录存在不代表已经参与构建。
-- 部分 CMake 注释存在编码异常，除非任务相关，否则不要为了“顺手清理”去重写无关文件。
-- `README.md` 已经较为详细，涵盖了安装、配置、部署等主要流程，但仍应结合源码结构判断具体实现行为。
-
-## 代理默认工作流程
-
-1. 先阅读目标模块的 `CMakeLists.txt`、公开头文件和程序入口。
-2. 用最小且完整的改动解决问题。
-3. 尽量只构建受影响的最小目标。
-4. 明确说明未覆盖的构建、运行或测试风险。
+- 优先做小而聚焦的改动
+- 修改实现时保持头文件与源文件同步
+- 默认延续现有 C++17 风格和模块边界
+- 涉及协议、点位、共享内存布局时，优先核对源码和 SQL schema
+- Windows 网络相关注意平台库，例如 `ws2_32`
 
 ## 按任务类型优先查看的位置
 
-- Modbus 相关问题：`src/modbus`、`src/model`、`config/tables/modbus_mapping.csv`
-- IEC104 相关问题：`src/iec104`、`src/model`、`config/tables/iec104_mapping.csv`
-- 配置相关问题：`src/config`、`config/tables`
-- 实时数据链路问题：`src/collector`、`src/rt_data`、`src/rt_db`、`src/apps`
-- 仪表板或查看器问题：`src/web` 及相关入口文件
+- Modbus：`src/modbus`、`src/model`
+- IEC104：`src/iec104`、`src/model`
+- 配置：`src/config`、`src/web/db.py`、`src/web/migrations`
+- 实时数据链路：`src/collector`、`src/rt_db`、`src/apps`
+- Web：`src/web`

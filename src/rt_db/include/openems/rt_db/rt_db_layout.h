@@ -1,96 +1,161 @@
 #pragma once
 
-#include <string>
+#include <cstddef>
 #include <cstdint>
 
 namespace openems::rt_db {
 
-// Shared memory data layout constants
-constexpr uint32_t kMagic = 0x454D5300;  // "EMS\0"
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kTableMagic = 0x454D5354;  // "EMST"
+constexpr uint16_t kTableVersion = 1;
+
+constexpr uint32_t kMaxTableNameLen = 32;
+constexpr uint32_t kMaxShmNameLen = 64;
 constexpr uint32_t kMaxPointIdLen = 32;
 constexpr uint32_t kMaxDeviceIdLen = 32;
-constexpr uint32_t kMaxSiteNameLen = 64;
-
-// Command status lifecycle: Idle -> Pending -> Executing -> Success/Failed
-enum CommandStatus : uint8_t {
-  CommandPending   = 0,
-  CommandExecuting = 1,
-  CommandSuccess   = 2,
-  CommandFailed    = 3,
-  CommandIdle      = 4,
-};
-
-// Telemetry: analog measurement (power, voltage, SOC, etc.)
-// Stored as double (8 bytes)
-struct TelemetrySlot {
-  double   value;       // 8 bytes — engineering value
-  uint64_t timestamp;   // 8 bytes — epoch milliseconds
-  uint8_t  quality;     // 1 byte  — 0=Good,1=Questionable,2=Bad,3=Invalid
-  uint8_t  valid;       // 1 byte
-  uint8_t  reserved[6]; // padding
-};
-// sizeof = 24, aligned
-
-// Teleindication: discrete state (run mode, on/off grid, switch position)
-// Stored as uint16 state code
-struct TeleindicationSlot {
-  uint16_t state_code;  // 2 bytes — enumerated state value
-  uint64_t timestamp;   // 8 bytes — epoch milliseconds
-  uint8_t  quality;     // 1 byte
-  uint8_t  valid;       // 1 byte
-  uint8_t  reserved[4]; // padding
-};
-// sizeof = 16, aligned
-
-// Command slot for telecontrol/teleadjust write operations
-// Cross-process command delivery via shared memory
-struct CommandSlot {
-  char     point_id[kMaxPointIdLen]; // 32 bytes — target point
-  char     reserved1[8];             // 8 bytes — padding
-  double   desired_value;            // 8 bytes — engineering value to write
-  double   result_value;             // 8 bytes — actual value after write (read-back)
-  uint64_t submit_time;              // 8 bytes — epoch ms when command submitted
-  uint64_t complete_time;            // 8 bytes — epoch ms when command completed
-  uint8_t  status;                   // 1 byte  — CommandStatus enum
-  uint8_t  error_code;               // 1 byte  — 0=no error
-  char     reserved2[6];             // 6 bytes — padding
-};
-// sizeof = 80, 8-aligned
-
-// Point index entry — maps PointId to a slot in the data section
-struct PointIndexEntry {
-  char     point_id[kMaxPointIdLen];   // fixed-length point identifier
-  char     device_id[kMaxDeviceIdLen]; // which device this point belongs to
-  uint8_t  point_category;             // 0=Telemetry, 1=Teleindication, 2=Telecontrol, 3=Setting
-  uint8_t  data_type;                  // original DataType enum for reference
-  uint8_t  writable;                   // 1=writable (telecontrol/teleadjust), 0=read-only
-  uint8_t  reserved1;                  // padding
-  uint32_t slot_offset;                // byte offset into DataSection
-  char     unit[8];                    // e.g. "W", "V", "A", "%"
-};
-// sizeof = 80, aligned
-
 constexpr uint32_t kMaxSiteIdLen = 32;
+constexpr uint32_t kMaxSiteNameLen = 64;
+constexpr uint32_t kMaxStrategyIdLen = 64;
+constexpr uint32_t kMaxAlarmIdLen = 64;
+constexpr uint32_t kMaxSeverityLen = 16;
+constexpr uint32_t kMaxMessageLen = 128;
+constexpr uint32_t kMaxReasonLen = 128;
+constexpr uint32_t kMaxTargetPointIdsLen = 128;
+constexpr uint32_t kMaxLastErrorLen = 128;
+constexpr uint32_t kInvalidSlotIndex = 0xFFFFFFFFu;
 
-// Shared memory header
-struct ShmHeader {
-  uint32_t magic;
-  uint32_t version;
-  uint32_t telemetry_count;    // number of telemetry slots (categories 0, 2, 3)
-  uint32_t teleindication_count; // number of teleindication slots (category 1)
-  uint32_t total_point_count;  // all points
-  uint32_t index_table_offset; // byte offset to PointIndexEntry array
-  uint32_t telemetry_offset;   // byte offset to TelemetrySlot array
-  uint32_t teleindication_offset; // byte offset to TeleindicationSlot array
-  uint32_t command_count;      // number of command slots
-  uint32_t command_offset;     // byte offset to CommandSlot array
-  uint64_t last_update_time;   // epoch ms of last write
-  uint64_t update_seq;         // monotonically increasing sequence number
-  char     site_id[kMaxSiteIdLen]; // 32 bytes
-  char     site_name[kMaxSiteNameLen]; // 64 bytes
-  uint32_t reserved[2];
+enum TableId : uint16_t {
+  TableCatalog = 1,
+  TablePointIndex = 2,
+  TableTelemetry = 3,
+  TableTeleindication = 4,
+  TableCommand = 5,
+  TableStrategyRuntime = 6,
+  TableAlarmActive = 7,
 };
-// sizeof = 160 (unchanged)
 
-} // namespace openems::rt_db
+enum CommandStatus : uint8_t {
+  CommandPending = 0,
+  CommandExecuting = 1,
+  CommandSuccess = 2,
+  CommandFailed = 3,
+  CommandIdle = 4,
+};
+
+struct TableHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t table_id;
+  uint32_t header_size;
+  uint32_t row_size;
+  uint32_t capacity;
+  uint32_t row_count;
+  uint32_t flags;
+  uint64_t last_update_time;
+  uint64_t update_seq;
+  char table_name[kMaxTableNameLen];
+  uint32_t reserved[4];
+};
+
+struct CatalogEntry {
+  uint16_t table_id;
+  uint16_t reserved0;
+  uint32_t row_size;
+  uint32_t capacity;
+  uint32_t row_count;
+  uint32_t flags;
+  char table_name[kMaxTableNameLen];
+  char shm_name[kMaxShmNameLen];
+};
+
+struct PointIndexHeader {
+  TableHeader base;
+  uint32_t telemetry_capacity;
+  uint32_t teleindication_capacity;
+  uint32_t command_capacity;
+  uint32_t telemetry_used;
+  uint32_t teleindication_used;
+  uint32_t command_used;
+  uint32_t reserved0;
+  char site_id[kMaxSiteIdLen];
+  char site_name[kMaxSiteNameLen];
+  uint32_t reserved[4];
+};
+
+struct PointIndexEntry {
+  char point_id[kMaxPointIdLen];
+  char device_id[kMaxDeviceIdLen];
+  uint8_t point_category;  // 0=Telemetry, 1=Teleindication, 2=Telecontrol, 3=Setting
+  uint8_t data_type;
+  uint8_t writable;
+  uint8_t reserved0;
+  uint32_t telemetry_slot_index;
+  uint32_t teleindication_slot_index;
+  uint32_t command_slot_index;
+  char unit[8];
+};
+
+struct TelemetrySlot {
+  double value;
+  uint64_t timestamp;
+  uint8_t quality;
+  uint8_t valid;
+  uint8_t reserved[6];
+};
+
+struct TeleindicationSlot {
+  uint16_t state_code;
+  uint64_t timestamp;
+  uint8_t quality;
+  uint8_t valid;
+  uint8_t reserved[4];
+};
+
+struct CommandSlot {
+  char point_id[kMaxPointIdLen];
+  char reserved1[8];
+  double desired_value;
+  double result_value;
+  uint64_t submit_time;
+  uint64_t complete_time;
+  uint8_t status;
+  uint8_t error_code;
+  char reserved2[6];
+};
+
+struct StrategyRuntimeSlot {
+  char strategy_id[kMaxStrategyIdLen];
+  char target_point_id[kMaxTargetPointIdsLen];
+  double target_value;
+  uint64_t update_time;
+  uint8_t suppressed;
+  char suppress_reason[kMaxReasonLen];
+  char last_error[kMaxLastErrorLen];
+};
+
+struct AlarmActiveSlot {
+  char alarm_id[kMaxAlarmIdLen];
+  char point_id[kMaxPointIdLen];
+  char device_id[kMaxDeviceIdLen];
+  char severity[kMaxSeverityLen];
+  char message[kMaxMessageLen];
+  double value;
+  uint64_t trigger_time;
+  uint64_t last_update_time;
+  uint8_t active;
+  char unit[16];
+};
+
+constexpr const char* kCatalogTableName = "catalog";
+constexpr const char* kPointIndexTableName = "point_index";
+constexpr const char* kTelemetryTableName = "telemetry";
+constexpr const char* kTeleindicationTableName = "teleindication";
+constexpr const char* kCommandTableName = "command";
+constexpr const char* kStrategyRuntimeTableName = "strategy_runtime";
+constexpr const char* kAlarmActiveTableName = "alarm_active";
+
+inline size_t table_total_size(const TableHeader& header) {
+  return static_cast<size_t>(header.header_size)
+      + static_cast<size_t>(header.capacity) * static_cast<size_t>(header.row_size);
+}
+
+}  // namespace openems::rt_db

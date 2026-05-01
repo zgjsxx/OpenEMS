@@ -297,14 +297,16 @@ def _bool_string(value):
 
 
 class ConfigStore:
-    def __init__(self, config_dir: Path, backup_root: Path | None = None):
-        self.config_dir = Path(config_dir)
+    def __init__(self, config_dir: Path | None = None, backup_root: Path | None = None):
+        self.config_dir = Path(config_dir) if config_dir else None
         self.backup_root = Path(backup_root) if backup_root else Path("runtime") / "config_backups"
 
     def schema(self):
         return {"tables": deepcopy(TABLE_SCHEMAS)}
 
     def load(self):
+        if self.config_dir is None:
+            raise RuntimeError("CSV config directory is not configured.")
         data = {}
         for table in TABLE_SCHEMAS:
             data[table["name"]] = _read_csv_rows(self.config_dir / table["file"])
@@ -577,6 +579,8 @@ class ConfigStore:
         }
 
     def write_csv(self, tables, backup=True):
+        if self.config_dir is None:
+            raise RuntimeError("CSV config directory is not configured.")
         backup_dir = self._backup_current_csvs() if backup else None
         self.config_dir.mkdir(parents=True, exist_ok=True)
         for table in TABLE_SCHEMAS:

@@ -61,7 +61,6 @@ except Exception:
 WEB_DIR = Path(__file__).resolve().parent
 APP_ROOT = Path.cwd().resolve()
 RUNTIME_DIR = APP_ROOT / "runtime"
-CONFIG_DIR = APP_ROOT / "config" / "tables"
 MIGRATIONS_DIR = WEB_DIR / "migrations"
 
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "admin": 3}
@@ -70,7 +69,7 @@ app = FastAPI(title="OpenEMS Operations Console")
 app.mount("/assets", StaticFiles(directory=str(WEB_DIR / "assets")), name="assets")
 
 _reader = ShmReader()
-_config_store = ConfigStore(CONFIG_DIR, backup_root=RUNTIME_DIR / "config_backups")
+_config_store = ConfigStore(backup_root=RUNTIME_DIR / "config_backups")
 _db = Database(MIGRATIONS_DIR)
 _db_state: Dict[str, Any] = {"ok": False, "error": "Database not initialized."}
 _system_metrics_cache: Dict[str, Any] = {

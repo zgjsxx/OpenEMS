@@ -1,10 +1,15 @@
 # OpenEMS
 
-OpenEMS 是一个单站能源管理 / 遥测采集项目，当前包含 C++ 采集与 RtDb 进程，以及 Python FastAPI 运维后台。
+OpenEMS 是一个单站 EMS / 遥测采集 / 运维后台项目，当前主要由以下部分组成：
 
-## 运行目录
+- C++ 采集、实时库、告警、历史、策略引擎
+- Python FastAPI 运维后台
+- PostgreSQL / TimescaleDB 持久化
+- Docker 部署与 E2E 仿真环境
 
-推荐使用 CMake install 生成仓库根目录下的 `install/`，并从 `install/` 运行所有程序：
+## 构建
+
+Windows:
 
 ```powershell
 cmake -S . -B build-codex-vs2019 -G "Visual Studio 16 2019" -A x64
@@ -12,7 +17,17 @@ cmake --build build-codex-vs2019 --config Release
 cmake --install build-codex-vs2019 --config Release --prefix install
 ```
 
-安装后主要目录：
+Linux:
+
+```sh
+cmake -S . -B build
+cmake --build build
+cmake --install build --prefix install
+```
+
+## 运行目录
+
+推荐通过 `install/` 目录运行：
 
 - `install/bin`
 - `install/config`
@@ -21,23 +36,25 @@ cmake --install build-codex-vs2019 --config Release --prefix install
 
 ## PostgreSQL
 
-Web 后台和 `openems-rtdb-service` 都通过 `OPENEMS_DB_URL` 连接 PostgreSQL。
+系统运行时配置和业务数据统一存放在 PostgreSQL / TimescaleDB 中。
 
-本地默认示例：
+常用环境变量：
 
 ```powershell
 $env:OPENEMS_DB_URL = "postgresql://postgres:postgres@127.0.0.1:5432/openems_admin"
 ```
 
-当前按 PostgreSQL 15 验证。Python 后台依赖安装：
+Python 后台依赖安装：
 
 ```powershell
 python -m pip install -r src/web/requirements.txt
 ```
 
-## 结构化配置
+## 配置存储
 
-PostgreSQL 是主配置源，配置按结构化表存储，例如：
+当前运行时只使用 PostgreSQL 结构化配置表，不再依赖 `config/tables` 下的 CSV 文件。
+
+主要结构化配置表包括：
 
 - `sites`
 - `ems_config`
@@ -50,95 +67,50 @@ PostgreSQL 是主配置源，配置按结构化表存储，例如：
 - `topology_links`
 - `topology_bindings`
 
-旧的 `config_tables(table_name, rows_json)` 已不再作为运行配置源。迁移脚本会把旧 JSON 快照拆入结构化表，并将旧表改名为 `config_tables_legacy`。
+初始化方式：
 
-CSV 保留为导入、导出、备份和离线兜底格式。
+- 数据库 schema 通过 `src/web/migrations/*.sql` 自动初始化
+- 示例 / 测试数据通过 SQL seed 导入
 
-## RtDb Service 配置源
+## RtDb
 
-`openems-rtdb-service` 从 PostgreSQL 结构化配置表读取运行必需配置：
+RtDb 当前采用按表拆分的共享内存表空间模型，核心表包括：
 
-- `sites`
-- `ems_config`
-- `devices`
-- `points`
-- `modbus_mappings`
-- `iec104_mappings`
+- `catalog`
+- `point_index`
+- `telemetry`
+- `teleindication`
+- `command`
+- `strategy_runtime`
+- `alarm_active`
 
-运行时仅支持 PostgreSQL 配置源。如果 PostgreSQL 不可用或 `libpq` 运行库不存在，服务将启动失败。
+`openems-rtdb-service` 从 PostgreSQL 结构化表读取配置并创建这些共享内存表。
 
-启动参数：
+## Docker
 
-```text
-openems-rtdb-service [shm_name]
-```
-
-参数说明：
-
-- `shm_name`：共享内存名称，默认使用平台内置值
-
-示例：
-
-```powershell
-.\bin\openems-rtdb-service.exe
-```
-
-Linux 示例：
-
-```sh
-./bin/openems-rtdb-service
-```
-
-## CSV 导入导出
-
-CSV 保留为导入、导出、备份和离线兜底格式。
-
-安装目录下导入 CSV 到 PostgreSQL：
-
-```powershell
-.\sync_config_to_postgres.ps1
-```
-
-Linux：
-
-```sh
-./sync_config_to_postgres.sh
-```
-
-源码目录开发调试：
-
-```powershell
-python src/web/sync_config_to_postgres.py --mode import --config-dir config/tables
-python src/web/sync_config_to_postgres.py --mode export --config-dir config/tables
-```
-
-## libpq 运行库
-
-RtDb service 使用运行时动态加载 `libpq`。
-
-- Windows：`third_party/postgresql/windows/x64/bin/` 中放置 `libpq.dll` 及依赖 DLL，install 时会复制到 `install/bin`。
-- Linux：`third_party/postgresql/linux/x64/lib/` 中放置 `libpq.so*`，install 时会复制到 `install/lib`。
-
-如果运行库不可用，程序会打印 warning 并退出。
-## Docker 部署
-
-仓库已提供：
+仓库提供：
 
 - `Dockerfile`
 - `docker-compose.yml`
+- `docker-compose.e2e.yml`
 
-可直接启动：
+启动：
 
 ```powershell
 docker compose up --build -d
 ```
 
-后台默认地址：
+E2E 仿真环境：
 
-```text
-http://127.0.0.1:8080/login
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
 ```
 
-详细说明见：
+后台默认地址：
 
-- `docs/docker_deploy.md`
+- [http://127.0.0.1:8080/login](http://127.0.0.1:8080/login)
+
+更多说明见：
+
+- [docs/docker_deploy.md](docs/docker_deploy.md)
+- [docs/strategy_e2e_guide.md](docs/strategy_e2e_guide.md)

@@ -222,6 +222,26 @@ static std::vector<ActiveAlarm> collect_active_alarms(
   return alarms;
 }
 
+static std::vector<openems::rt_db::AlarmActiveRecord> build_alarm_runtime_records(
+    const std::vector<ActiveAlarm>& alarms) {
+  std::vector<openems::rt_db::AlarmActiveRecord> records;
+  records.reserve(alarms.size());
+  for (const auto& alarm : alarms) {
+    records.push_back(openems::rt_db::AlarmActiveRecord{
+        alarm.id,
+        alarm.point_id,
+        alarm.device_id,
+        alarm.level,
+        alarm.message,
+        alarm.value,
+        alarm.unit,
+        alarm.trigger_time,
+        alarm.last_update_time,
+        true});
+  }
+  return records;
+}
+
 static bool sync_active_alarms(DbContext& db, const std::vector<ActiveAlarm>& alarms) {
   if (!connect_db(db)) return false;
   if (!exec_sql(db, "BEGIN")) return false;
@@ -367,12 +387,18 @@ int main(int argc, char* argv[]) {
       exit_code = 1;
       break;
     }
+    auto runtime_records = build_alarm_runtime_records(alarms);
+    auto shm_result = rt_db->replace_active_alarms(runtime_records);
+    if (!shm_result.is_ok()) {
+      OPENEMS_LOG_E("Alarm", "Failed to update alarm_active table: " + shm_result.error_msg());
+    }
     std::this_thread::sleep_for(std::chrono::seconds(2));
   }
 
   if (db.conn && db.api.PQstatus(db.conn) == 0) {
     sync_active_alarms(db, {});
   }
+  rt_db->replace_active_alarms({});
   if (db.conn) {
     db.api.PQfinish(db.conn);
     db.conn = nullptr;

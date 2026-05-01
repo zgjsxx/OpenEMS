@@ -1,5 +1,0 @@
-id,device_id,name,code,data_type,unit,writable
-pv-target-power,pv-001,Target Power,PV_TGT_P,int32,W,true
-pv-target-power-limit,pv-001,Target Power Limit,PV_TGT_LIMIT,uint16,%,true
-bess-target-power,bess-001,Target Power,BESS_TGT_P,int32,W,true
-bess-target-soc,bess-001,Target SOC,BESS_TGT_SOC,uint16,%,true

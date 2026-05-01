@@ -1,6 +1,0 @@
-id,site_id,source_node_id,target_node_id,type,enabled
-grid-to-breaker,site-demo-001,grid-incomer,grid-breaker,line,true
-breaker-to-bus,site-demo-001,grid-breaker,main-bus,breaker,true
-bus-to-pv,site-demo-001,main-bus,pv-001-node,line,true
-bus-to-bess,site-demo-001,main-bus,bess-001-node,line,true
-bus-to-load,site-demo-001,main-bus,load-001-node,line,true

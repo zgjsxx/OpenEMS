@@ -1,6 +1,0 @@
-point_id,type_id,ioa,common_address,scale,cot
-grid-on-off-status,3,1,1,1.0,3
-grid-active-power,13,100,1,1.0,1
-grid-frequency,13,101,1,1.0,1
-grid-voltage,13,102,1,0.1,1
-grid-switch-position,1,10,1,1.0,3

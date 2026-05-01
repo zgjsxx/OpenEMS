@@ -1,6 +1,0 @@
-id,point_id,enabled,operator,threshold,severity,message
-bess-soc-low,bess-soc,true,<,10,critical,SOC too low
-bess-soc-high,bess-soc,true,>,95,warning,SOC too high
-bess-off-grid,bess-grid-state,true,==,1,warning,BESS is off-grid
-pv-stopped,pv-running-status,true,==,0,warning,PV is stopped
-pv-fault,pv-running-status,true,==,3,critical,PV fault

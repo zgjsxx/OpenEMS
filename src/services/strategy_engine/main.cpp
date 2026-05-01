@@ -489,6 +489,7 @@ static void write_action_log(DbContext& db,
 }
 
 static void update_runtime_state(DbContext& db,
+                                 openems::rt_db::RtDb* rt_db,
                                  const std::string& strategy_id,
                                  double target_value,
                                  const std::string& target_point_id,
@@ -496,6 +497,17 @@ static void update_runtime_state(DbContext& db,
                                  const std::string& suppress_reason,
                                  const std::string& input_summary,
                                  const std::string& error) {
+  if (rt_db) {
+    rt_db->upsert_strategy_runtime(openems::rt_db::StrategyRuntimeRecord{
+        strategy_id,
+        target_point_id,
+        target_value,
+        suppressed,
+        suppress_reason,
+        error,
+        now_ms()});
+  }
+
   if (!connect_db(db)) return;
   std::ostringstream sql;
   sql << "INSERT INTO strategy_runtime_state("
@@ -1008,7 +1020,7 @@ int main(int argc, char* argv[]) {
         }
 
         arf->mark_target_applied(final_target);
-        update_runtime_state(db, arf->definition().id,
+        update_runtime_state(db, rt_db, arf->definition().id,
                              pv_action_active || pv_recovery_active ? pv_target_limit_pct : final_target,
                              pv_action_active || pv_recovery_active ? pv_setpoint_id : target_point_id,
                              final_suppressed,
@@ -1028,7 +1040,7 @@ int main(int argc, char* argv[]) {
                          (pv_action_active || pv_recovery_active) ? pv_submit_message : submit_message);
 
         if (soc) {
-          update_runtime_state(db, soc->definition().id,
+          update_runtime_state(db, rt_db, soc->definition().id,
                                final_target, target_point_id,
                                soc_runtime_suppressed,
                                soc_runtime_reason,
@@ -1058,7 +1070,7 @@ int main(int argc, char* argv[]) {
                       << ",suppressed=" << (soc_result.suppressed ? "1" : "0")
                       << ",cmd=" << soc_result.command_result;
 
-        update_runtime_state(db, soc->definition().id,
+        update_runtime_state(db, rt_db, soc->definition().id,
                              soc_result.target_power_kw, setpoint_id,
                              soc_result.suppressed, soc_result.suppress_reason,
                              input_summary.str(), "");

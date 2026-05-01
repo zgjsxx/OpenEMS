@@ -65,13 +65,54 @@ struct SiteSnapshot {
   std::string to_string() const;
 };
 
+struct TableInfo {
+  uint16_t table_id = 0;
+  std::string table_name;
+  std::string shm_name;
+  uint32_t row_size = 0;
+  uint32_t capacity = 0;
+  uint32_t row_count = 0;
+  uint32_t flags = 0;
+};
+
+struct TableView {
+  TableInfo info;
+  TableHeader* header = nullptr;
+  void* rows = nullptr;
+};
+
+struct StrategyRuntimeRecord {
+  std::string strategy_id;
+  std::string target_point_id;
+  double target_value = 0.0;
+  bool suppressed = false;
+  std::string suppress_reason;
+  std::string last_error;
+  uint64_t update_time = 0;
+};
+
+struct AlarmActiveRecord {
+  std::string alarm_id;
+  std::string point_id;
+  std::string device_id;
+  std::string severity;
+  std::string message;
+  double value = 0.0;
+  std::string unit;
+  uint64_t trigger_time = 0;
+  uint64_t last_update_time = 0;
+  bool active = true;
+};
+
 class RtDb {
 public:
   // Create shared memory region (RtDb service process)
   static common::Result<RtDb*> create(const std::string& shm_name,
                                        uint32_t telemetry_count,
                                        uint32_t teleindication_count,
-                                       uint32_t command_count);
+                                       uint32_t command_count,
+                                       uint32_t strategy_runtime_count = 64,
+                                       uint32_t alarm_active_count = 256);
 
   // Attach to existing shared memory (other processes)
   static common::Result<RtDb*> attach(const std::string& shm_name);
@@ -152,6 +193,16 @@ public:
   uint32_t command_count() const;
   uint64_t update_sequence() const;
   bool is_creator() const { return is_creator_; }
+  std::vector<TableInfo> list_tables() const;
+  common::Result<TableInfo> get_table_info(const std::string& table_name) const;
+  common::Result<TableInfo> get_table_info(uint16_t table_id) const;
+  common::Result<TableView> open_table(const std::string& table_name);
+  common::Result<TableView> open_table(uint16_t table_id);
+
+  common::VoidResult upsert_strategy_runtime(const StrategyRuntimeRecord& record);
+  std::vector<StrategyRuntimeRecord> read_strategy_runtime() const;
+  common::VoidResult replace_active_alarms(const std::vector<AlarmActiveRecord>& alarms);
+  std::vector<AlarmActiveRecord> read_active_alarms() const;
 
   // Print snapshot to stdout
   void print_snapshot();
@@ -172,18 +223,35 @@ private:
   std::string shm_name_;
   bool is_creator_;
 
-  // Platform-specific handles stored as void* for portability
-  void* shm_handle_ = nullptr;
-  void* file_handle_ = nullptr;
-  uint8_t* mapped_addr_ = nullptr;
-  size_t mapped_size_ = 0;
+  struct Segment {
+    std::string shm_name;
+    void* handle = nullptr;
+    uint8_t* mapped_addr = nullptr;
+    size_t mapped_size = 0;
+  };
 
-  // Pointers into mapped memory (set after map)
-  ShmHeader* header_ = nullptr;
+  Segment catalog_segment_;
+  Segment point_index_segment_;
+  Segment telemetry_segment_;
+  Segment teleindication_segment_;
+  Segment command_segment_;
+  Segment strategy_runtime_segment_;
+  Segment alarm_active_segment_;
+
+  TableHeader* catalog_header_ = nullptr;
+  CatalogEntry* catalog_entries_ = nullptr;
+  PointIndexHeader* point_index_header_ = nullptr;
   PointIndexEntry* index_table_ = nullptr;
+  TableHeader* telemetry_header_ = nullptr;
   TelemetrySlot* telemetry_slots_ = nullptr;
+  TableHeader* teleindication_header_ = nullptr;
   TeleindicationSlot* teleindication_slots_ = nullptr;
+  TableHeader* command_header_ = nullptr;
   CommandSlot* command_slots_ = nullptr;
+  TableHeader* strategy_runtime_header_ = nullptr;
+  StrategyRuntimeSlot* strategy_runtime_slots_ = nullptr;
+  TableHeader* alarm_active_header_ = nullptr;
+  AlarmActiveSlot* alarm_active_slots_ = nullptr;
 
   // Lock for in-process access to the shared memory
   // Cross-process locking is handled via update_seq (seqlock pattern)

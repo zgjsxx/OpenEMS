@@ -3,12 +3,9 @@ set -euo pipefail
 
 APP_ROOT="/opt/openems/install"
 WEB_PORT="${OPENEMS_WEB_PORT:-8080}"
-SYNC_ON_START="${OPENEMS_SYNC_CONFIG_ON_START:-1}"
-FORCE_SYNC_ON_START="${OPENEMS_FORCE_SYNC_CONFIG_ON_START:-0}"
 SHM_NAME="${OPENEMS_SHM_NAME:-/openems_rt_db}"
 LOG_DIR="${APP_ROOT}/runtime/logs"
 PID_DIR="${APP_ROOT}/runtime/pids"
-BOOTSTRAP_CONFIG_DIR="${OPENEMS_BOOTSTRAP_CONFIG_DIR:-./config/tables}"
 INIT_SQL="${OPENEMS_INIT_SQL:-}"
 
 cd "$APP_ROOT"
@@ -31,13 +28,7 @@ wait_for_postgres() {
 
 bootstrap_db() {
   log "Initializing PostgreSQL schema and default admin..."
-  if [ "$FORCE_SYNC_ON_START" = "1" ]; then
-    python3 ./web/bootstrap_db.py --config-dir "$BOOTSTRAP_CONFIG_DIR" --force-sync
-  elif [ "$SYNC_ON_START" = "1" ]; then
-    python3 ./web/bootstrap_db.py --config-dir "$BOOTSTRAP_CONFIG_DIR" --sync-if-empty
-  else
-    python3 ./web/bootstrap_db.py --config-dir "$BOOTSTRAP_CONFIG_DIR"
-  fi
+  python3 ./web/bootstrap_db.py
 }
 
 run_init_sql() {

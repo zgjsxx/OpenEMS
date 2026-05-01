@@ -12,6 +12,8 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(CTest)
+
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
   set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/install" CACHE PATH "Install path prefix" FORCE)
 endif()
@@ -49,9 +51,11 @@ else()
   endif()
 endif()
 
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/
-  DESTINATION config
-)
+if(EXISTS "${CMAKE_SOURCE_DIR}/config/modbus")
+  install(DIRECTORY ${CMAKE_SOURCE_DIR}/config/modbus/
+    DESTINATION config/modbus
+  )
+endif()
 
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/
   DESTINATION web
@@ -79,10 +83,13 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/src/web/install_scripts/
 )
 
 install(CODE [[
+  file(REMOVE_RECURSE "${CMAKE_INSTALL_PREFIX}/config/tables")
   file(MAKE_DIRECTORY "${CMAKE_INSTALL_PREFIX}/runtime")
   file(MAKE_DIRECTORY "${CMAKE_INSTALL_PREFIX}/runtime/history")
   file(MAKE_DIRECTORY "${CMAKE_INSTALL_PREFIX}/runtime/config_backups")
 ]])
 
-# Copy config files to build directory
-file(COPY ${CMAKE_SOURCE_DIR}/config DESTINATION ${CMAKE_BINARY_DIR})
+# Copy non-runtime config assets to build directory
+if(EXISTS "${CMAKE_SOURCE_DIR}/config/modbus")
+  file(COPY ${CMAKE_SOURCE_DIR}/config/modbus DESTINATION ${CMAKE_BINARY_DIR}/config)
+endif()
