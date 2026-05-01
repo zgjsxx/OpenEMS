@@ -760,14 +760,20 @@ class Database:
             UPDATE alarm_events
             SET ack_by = %s,
                 ack_at = NOW(),
-                status = CASE WHEN cleared_at IS NULL THEN 'acked' ELSE status END
+                status = CASE
+                    WHEN cleared_at IS NULL AND status = 'active' THEN 'acked'
+                    ELSE status
+                END
             WHERE alarm_id = %s
-            RETURNING alarm_id, status, ack_by, ack_at
+            RETURNING alarm_id, point_id, device_id, severity, message, value_text,
+                      active_since, last_seen_at, cleared_at, ack_by, ack_at,
+                      silenced_by, silenced_at, status
             """,
             (username, alarm_id),
         )
         if row:
-            row["ack_at"] = _to_iso(row.get("ack_at"))
+            for key in ("active_since", "last_seen_at", "cleared_at", "ack_at", "silenced_at"):
+                row[key] = _to_iso(row.get(key))
         return row
 
     def silence_alarm(self, alarm_id: str, username: str) -> Optional[Dict[str, Any]]:
@@ -776,14 +782,20 @@ class Database:
             UPDATE alarm_events
             SET silenced_by = %s,
                 silenced_at = NOW(),
-                status = CASE WHEN cleared_at IS NULL THEN 'silenced' ELSE status END
+                status = CASE
+                    WHEN cleared_at IS NULL AND status = 'active' THEN 'silenced'
+                    ELSE status
+                END
             WHERE alarm_id = %s
-            RETURNING alarm_id, status, silenced_by, silenced_at
+            RETURNING alarm_id, point_id, device_id, severity, message, value_text,
+                      active_since, last_seen_at, cleared_at, ack_by, ack_at,
+                      silenced_by, silenced_at, status
             """,
             (username, alarm_id),
         )
         if row:
-            row["silenced_at"] = _to_iso(row.get("silenced_at"))
+            for key in ("active_since", "last_seen_at", "cleared_at", "ack_at", "silenced_at"):
+                row[key] = _to_iso(row.get(key))
         return row
 
     def log_audit(

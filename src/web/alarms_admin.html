@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenEMS Alarms</title>
+<title>OpenEMS 告警管理</title>
 <link rel="stylesheet" href="/assets/admin.css">
 </head>
 <body>
@@ -27,36 +27,85 @@
       <button id="logout-btn" class="secondary">退出登录</button>
     </div>
   </aside>
+
   <div class="main-shell">
     <header class="topbar">
       <div>
         <div class="page-title">告警管理</div>
-        <div class="page-subtitle">活动告警从运行时文件同步到 PostgreSQL，确认与消音状态持久化</div>
+        <div class="page-subtitle">活动告警在恢复前持续显示，确认后停止重复提示，恢复后进入历史告警。</div>
       </div>
     </header>
+
     <main class="page-content">
       <section class="table-card">
         <div class="table-card-header">
           <div>
-            <div class="section-title">筛选</div>
-            <div class="section-subtitle">支持活动 / 历史告警切换</div>
+            <div class="section-title">筛选与提醒</div>
+            <div class="section-subtitle">支持自动刷新、设备筛选、提示音和标题闪烁提醒。</div>
+          </div>
+          <div class="toolbar compact">
+            <span id="alarm-summary" class="pill info">未确认活动告警 0</span>
+            <span id="alarm-refresh-state" class="pill muted">自动刷新已开启</span>
+            <button id="sound-toggle" class="secondary">提示音未解锁</button>
+            <button id="query-btn">立即刷新</button>
           </div>
         </div>
+
         <div class="table-card-body">
           <div class="filters">
-            <div><label for="status">范围</label><select id="status"><option value="active">活动告警</option><option value="history">历史告警</option></select></div>
-            <div><label for="severity">级别</label><select id="severity"><option value="">全部</option><option value="warning">warning</option><option value="critical">critical</option></select></div>
-            <div><label for="device-id">设备</label><input id="device-id" type="text" placeholder="例如 pv-001"></div>
-            <div><label>&nbsp;</label><button id="query-btn">刷新</button></div>
+            <div>
+              <label for="status">范围</label>
+              <select id="status">
+                <option value="active">活动告警</option>
+                <option value="history">历史告警</option>
+              </select>
+            </div>
+            <div>
+              <label for="severity">级别</label>
+              <select id="severity">
+                <option value="">全部</option>
+                <option value="warning">warning</option>
+                <option value="critical">critical</option>
+              </select>
+            </div>
+            <div>
+              <label for="device-id">设备</label>
+              <select id="device-id">
+                <option value="">全部设备</option>
+              </select>
+            </div>
+            <div>
+              <label for="refresh-interval">刷新周期</label>
+              <select id="refresh-interval">
+                <option value="3000">3 s</option>
+                <option value="5000" selected>5 s</option>
+                <option value="10000">10 s</option>
+                <option value="30000">30 s</option>
+              </select>
+            </div>
           </div>
+
+          <div id="sound-tip" class="notice" style="margin-bottom:14px;">
+            浏览器会限制页面自动发声。进入页面后只要点击、按键或滚轮一次，本页就会自动解锁提示音。
+          </div>
+
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>状态</th><th>级别</th><th>设备</th><th>点位</th><th>消息</th><th>首次触发</th><th>最后变化</th><th>处理</th>
+                  <th>状态</th>
+                  <th>级别</th>
+                  <th>设备</th>
+                  <th>点位</th>
+                  <th>告警信息</th>
+                  <th>触发时间</th>
+                  <th>最近变化</th>
+                  <th>处理</th>
                 </tr>
               </thead>
-              <tbody id="alarm-table"><tr><td colspan="8" class="muted">加载中</td></tr></tbody>
+              <tbody id="alarm-table">
+                <tr><td colspan="8" class="muted">加载中...</td></tr>
+              </tbody>
             </table>
           </div>
         </div>
@@ -64,41 +113,279 @@
     </main>
   </div>
 </div>
+
 <script src="/assets/admin.js"></script>
 <script>
 let currentUser = null;
+let refreshTimer = null;
+let audioContext = null;
+let soundArmed = false;
+let soundMuted = false;
+let firstActiveLoad = true;
+let knownActiveIds = new Set();
+let titleFlashTimer = null;
+let titleFlashMessage = "";
+let currentActiveUnackedCount = 0;
+let armedNotificationDone = false;
+const originalTitle = document.title;
 
 function canOperate() {
   return currentUser && ["admin", "operator"].includes(currentUser.role);
 }
 
-async function runAction(action, alarmId) {
-  if (!canOperate()) return;
-  if (!window.confirm(`确认执行 ${action} ${alarmId} ?`)) return;
-  await OpenEMSAdmin.api(`/api/alarms/${encodeURIComponent(alarmId)}/${action}`, { method: "POST" });
-  await loadAlarms();
+function setRefreshState(text, level = "muted") {
+  const el = document.getElementById("alarm-refresh-state");
+  el.className = `pill ${level}`;
+  el.textContent = text;
 }
 
-async function loadAlarms() {
+function updateSoundButton() {
+  const button = document.getElementById("sound-toggle");
+  if (!soundArmed) {
+    button.textContent = "提示音未解锁";
+    button.className = "secondary";
+    return;
+  }
+  if (soundMuted) {
+    button.textContent = "恢复提示音";
+    button.className = "secondary";
+    return;
+  }
+  button.textContent = "静音";
+  button.className = "button";
+}
+
+function ensureAudioContext() {
+  if (!audioContext) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) {
+      throw new Error("当前浏览器不支持 Web Audio。");
+    }
+    audioContext = new AudioCtx();
+  }
+  return audioContext;
+}
+
+async function armSound(reason = "interaction") {
+  if (soundArmed) {
+    updateSoundButton();
+    return true;
+  }
+  try {
+    const ctx = ensureAudioContext();
+    await ctx.resume();
+    soundArmed = true;
+    soundMuted = false;
+    updateSoundButton();
+    const tip = document.getElementById("sound-tip");
+    tip.className = "notice success";
+    tip.textContent = reason === "button"
+      ? "提示音已开启。新的未确认活动告警会触发警报声。"
+      : "已根据你的操作自动开启提示音。新的未确认活动告警会触发警报声。";
+    if (currentActiveUnackedCount > 0 && !armedNotificationDone) {
+      playAlarmTone();
+      startTitleFlash(`未确认活动告警 ${currentActiveUnackedCount} 条`);
+      setRefreshState(`当前未确认活动告警：${currentActiveUnackedCount} 条`, "warn");
+      armedNotificationDone = true;
+    }
+    return true;
+  } catch (error) {
+    const tip = document.getElementById("sound-tip");
+    tip.className = "notice error";
+    tip.textContent = `提示音仍被浏览器拦截：${error.message}`;
+    updateSoundButton();
+    return false;
+  }
+}
+
+function toggleSoundMute() {
+  if (!soundArmed) {
+    armSound("button");
+    return;
+  }
+  soundMuted = !soundMuted;
+  updateSoundButton();
+  setRefreshState(soundMuted ? "提示音已静音" : "提示音已开启", soundMuted ? "muted" : "info");
+}
+
+function installAutoArm() {
+  const unlock = () => {
+    armSound("interaction");
+  };
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach((eventName) => {
+    window.addEventListener(eventName, unlock, { passive: true });
+  });
+}
+
+function playAlarmTone() {
+  if (!soundArmed || soundMuted) return;
+  try {
+    const ctx = ensureAudioContext();
+    const now = ctx.currentTime;
+    const pattern = [
+      { start: 0.00, end: 0.18, freq: 880 },
+      { start: 0.18, end: 0.36, freq: 660 },
+      { start: 0.50, end: 0.68, freq: 880 },
+      { start: 0.68, end: 0.86, freq: 660 },
+      { start: 1.00, end: 1.18, freq: 880 },
+      { start: 1.18, end: 1.36, freq: 660 },
+    ];
+
+    for (const step of pattern) {
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      gain.gain.setValueAtTime(0.0001, now + step.start);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + step.start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + step.end);
+
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(step.freq, now + step.start);
+      osc.connect(gain);
+      osc.start(now + step.start);
+      osc.stop(now + step.end);
+    }
+  } catch (_) {
+  }
+}
+
+function startTitleFlash(message) {
+  titleFlashMessage = message;
+  if (titleFlashTimer) return;
+  let toggle = false;
+  titleFlashTimer = window.setInterval(() => {
+    document.title = toggle ? `[告警] ${titleFlashMessage}` : originalTitle;
+    toggle = !toggle;
+  }, 900);
+}
+
+function stopTitleFlash() {
+  if (titleFlashTimer) {
+    clearInterval(titleFlashTimer);
+    titleFlashTimer = null;
+  }
+  document.title = originalTitle;
+}
+
+async function loadDeviceOptions() {
+  const select = document.getElementById("device-id");
+  const selected = select.value;
+  const config = await OpenEMSAdmin.api("/api/config");
+  const devices = Array.isArray(config.devices) ? config.devices : [];
+  const options = ['<option value="">全部设备</option>'];
+  for (const row of devices) {
+    const id = OpenEMSAdmin.escapeHtml(row.id || "");
+    const name = OpenEMSAdmin.escapeHtml(row.name || row.id || "");
+    const type = OpenEMSAdmin.escapeHtml(row.type || "");
+    const label = type ? `${id} | ${name} | ${type}` : `${id} | ${name}`;
+    options.push(`<option value="${id}">${label}</option>`);
+  }
+  select.innerHTML = options.join("");
+  if (devices.some((row) => String(row.id || "") === selected)) {
+    select.value = selected;
+  }
+}
+
+function restartAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  const interval = Number(document.getElementById("refresh-interval").value || 5000);
+  refreshTimer = window.setInterval(() => {
+    loadAlarms(true).catch((error) => {
+      setRefreshState(`自动刷新失败：${error.message}`, "danger");
+    });
+  }, interval);
+}
+
+async function runAction(action, alarmId) {
+  if (!canOperate()) return;
+  const label = action === "ack" ? "确认" : "消音";
+  if (!window.confirm(`确认要对告警 ${alarmId} 执行“${label}”吗？`)) return;
+  await OpenEMSAdmin.api(`/api/alarms/${encodeURIComponent(alarmId)}/${action}`, { method: "POST" });
+  await loadAlarms(false);
+}
+
+function renderProcessInfo(row) {
+  const parts = [];
+  if (row.ack_at) {
+    parts.push(`已确认：${OpenEMSAdmin.escapeHtml(row.ack_by || "-")} / ${OpenEMSAdmin.formatDateTime(row.ack_at)}`);
+  }
+  if (row.silenced_at) {
+    parts.push(`已消音：${OpenEMSAdmin.escapeHtml(row.silenced_by || "-")} / ${OpenEMSAdmin.formatDateTime(row.silenced_at)}`);
+  }
+  if (row.cleared_at) {
+    parts.push(`已恢复：${OpenEMSAdmin.formatDateTime(row.cleared_at)}`);
+  }
+  if (!parts.length) {
+    return '<span class="muted">待处理</span>';
+  }
+  return parts.map((item) => `<div>${item}</div>`).join("");
+}
+
+async function loadAlarms(isAutoRefresh = false) {
   const params = new URLSearchParams({
     status: document.getElementById("status").value,
     severity: document.getElementById("severity").value,
-    device_id: document.getElementById("device-id").value.trim(),
+    device_id: document.getElementById("device-id").value,
   });
   const data = await OpenEMSAdmin.api(`/api/alarms?${params.toString()}`);
-  const body = document.getElementById("alarm-table");
   const rows = data.rows || [];
+  const body = document.getElementById("alarm-table");
+
+  const activeUnackedIds = rows
+    .filter((row) => !row.cleared_at && String(row.status || "").toLowerCase() === "active")
+    .map((row) => row.alarm_id);
+  const newActiveIds = activeUnackedIds.filter((id) => !knownActiveIds.has(id));
+  knownActiveIds = new Set(activeUnackedIds);
+  currentActiveUnackedCount = activeUnackedIds.length;
+
+  const summary = document.getElementById("alarm-summary");
+  summary.textContent = `未确认活动告警 ${activeUnackedIds.length}`;
+  summary.className = `pill ${activeUnackedIds.length ? "danger" : "success"}`;
+
+  if (activeUnackedIds.length && document.getElementById("status").value === "active") {
+    startTitleFlash(`未确认活动告警 ${activeUnackedIds.length} 条`);
+    if (!newActiveIds.length || firstActiveLoad) {
+      setRefreshState(
+        soundArmed
+          ? `当前未确认活动告警：${activeUnackedIds.length} 条`
+          : `存在未确认活动告警。请先点击页面一次以启用提示音。`,
+        "warn"
+      );
+    }
+  }
+
+  if (!firstActiveLoad && newActiveIds.length && document.getElementById("status").value === "active") {
+    playAlarmTone();
+    startTitleFlash(`新增未确认活动告警 ${newActiveIds.length} 条`);
+    setRefreshState(`检测到新增未确认活动告警：${newActiveIds.length} 条`, "warn");
+    armedNotificationDone = true;
+  } else if (!activeUnackedIds.length) {
+    stopTitleFlash();
+    armedNotificationDone = false;
+    if (isAutoRefresh) {
+      setRefreshState(`已自动刷新 ${OpenEMSAdmin.formatShortDateTime(new Date())}`, "muted");
+    }
+  } else if (isAutoRefresh) {
+    setRefreshState(`已自动刷新 ${OpenEMSAdmin.formatShortDateTime(new Date())}`, "muted");
+  }
+  firstActiveLoad = false;
+
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="8" class="muted">没有匹配的告警</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="muted">没有匹配的告警记录</td></tr>';
     return;
   }
+
   body.innerHTML = rows.map((row) => {
     const lastAt = row.cleared_at || row.ack_at || row.silenced_at || row.last_seen_at;
-    const actionButtons = canOperate() && !row.cleared_at ? `
+    const isRealtimeUnacked = (row.status || "").toLowerCase() === "active" && !row.cleared_at;
+    const actions = canOperate() && isRealtimeUnacked ? `
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="secondary" onclick="runAction('ack', '${row.alarm_id}')">确认</button>
         <button class="warn" onclick="runAction('silence', '${row.alarm_id}')">消音</button>
-      </div>` : "-";
+      </div>` : renderProcessInfo(row);
     return `<tr>
       <td>${OpenEMSAdmin.statusPill(row.status || "active")}</td>
       <td>${OpenEMSAdmin.statusPill(row.severity || "warning")}</td>
@@ -107,7 +394,7 @@ async function loadAlarms() {
       <td>${OpenEMSAdmin.escapeHtml(row.message || "-")}</td>
       <td>${OpenEMSAdmin.formatDateTime(row.active_since)}</td>
       <td>${OpenEMSAdmin.formatDateTime(lastAt)}</td>
-      <td>${actionButtons}</td>
+      <td>${actions}</td>
     </tr>`;
   }).join("");
 }
@@ -115,8 +402,19 @@ async function loadAlarms() {
 async function boot() {
   const me = await OpenEMSAdmin.bindChrome("alarms");
   currentUser = me.user || null;
-  document.getElementById("query-btn").addEventListener("click", loadAlarms);
-  await loadAlarms();
+  installAutoArm();
+  updateSoundButton();
+  await loadDeviceOptions();
+
+  document.getElementById("query-btn").addEventListener("click", () => loadAlarms(false));
+  document.getElementById("status").addEventListener("change", () => loadAlarms(false));
+  document.getElementById("severity").addEventListener("change", () => loadAlarms(false));
+  document.getElementById("device-id").addEventListener("change", () => loadAlarms(false));
+  document.getElementById("refresh-interval").addEventListener("change", restartAutoRefresh);
+  document.getElementById("sound-toggle").addEventListener("click", toggleSoundMute);
+
+  await loadAlarms(false);
+  restartAutoRefresh();
 }
 
 boot();
