@@ -336,6 +336,24 @@ struct PvBindingGroup {
   std::string limit_setpoint_point_id;
 };
 
+static double bess_group_power_limit_kw(
+    const openems::strategy::StrategyParams& params,
+    const BessBindingGroup& group,
+    double target_kw) {
+  if (target_kw < 0.0) {
+    return params.bess_charge_power_limit_for_group(group.key);
+  }
+  if (target_kw > 0.0) {
+    return params.bess_discharge_power_limit_for_group(group.key);
+  }
+  return params.bess_charge_power_limit_for_group(group.key);
+}
+
+static double pv_group_rated_power_kw(const openems::strategy::StrategyParams& params,
+                                      const PvBindingGroup& group) {
+  return params.pv_rated_power_for_group(group.key);
+}
+
 static std::string join_strings(const std::vector<std::string>& values,
                                 const std::string& sep) {
   std::ostringstream oss;
@@ -699,11 +717,17 @@ int main(int argc, char* argv[]) {
 
             bool pv_running = false;
             double total_pv_power_kw = 0.0;
-            double current_limit_sum = 0.0;
-            int current_limit_count = 0;
+            double current_limit_weighted_sum = 0.0;
+            double total_pv_rated_kw = 0.0;
             std::vector<std::string> pv_setpoint_ids;
 
             for (const auto& pv_group : pv_groups) {
+              const double group_rated_kw =
+                  pv_group_rated_power_kw(arf_strategy->params, pv_group);
+              if (group_rated_kw <= 0.0) {
+                continue;
+              }
+
               bool group_running = true;
               if (!pv_group.run_state_point_id.empty()) {
                 double pv_run_state = 0.0;
@@ -717,13 +741,13 @@ int main(int argc, char* argv[]) {
                 continue;
               }
               pv_running = true;
+              total_pv_rated_kw += group_rated_kw;
 
               if (!pv_group.limit_setpoint_point_id.empty()) {
                 pv_setpoint_ids.push_back(pv_group.limit_setpoint_point_id);
                 double current_limit = arf_strategy->params.pv_limit_max_pct;
                 if (read_point_value(rt_db, pv_group.limit_setpoint_point_id, current_limit, read_error)) {
-                  current_limit_sum += current_limit;
-                  ++current_limit_count;
+                  current_limit_weighted_sum += current_limit * group_rated_kw;
                 }
               }
 
@@ -731,8 +755,7 @@ int main(int argc, char* argv[]) {
                 double current_pv_power_value = 0.0;
                 if (read_point_value(rt_db, pv_group.power_point_id, current_pv_power_value, read_error)) {
                   double current_pv_power_kw = current_pv_power_value;
-                  if (std::abs(current_pv_power_kw) >
-                      (arf_strategy->params.pv_rated_power_kw * 2.0)) {
+                  if (std::abs(current_pv_power_kw) > (group_rated_kw * 2.0)) {
                     current_pv_power_kw /= 1000.0;
                   }
                   total_pv_power_kw += current_pv_power_kw;
@@ -741,11 +764,11 @@ int main(int argc, char* argv[]) {
             }
 
             if (pv_running && !pv_setpoint_ids.empty() &&
-                arf_strategy->params.pv_rated_power_kw > 0.0) {
+                total_pv_rated_kw > 0.0) {
               pv_setpoint_id = join_strings(pv_setpoint_ids, ",");
               double current_limit_pct =
-                  current_limit_count > 0
-                      ? (current_limit_sum / static_cast<double>(current_limit_count))
+                  current_limit_weighted_sum > 0.0
+                      ? (current_limit_weighted_sum / total_pv_rated_kw)
                       : arf_strategy->params.pv_limit_max_pct;
               {
                 double current_pv_power_kw = total_pv_power_kw;
@@ -771,7 +794,7 @@ int main(int argc, char* argv[]) {
                           ? (current_pv_power_kw - excess_export_kw)
                           : 0.0;
                   double desired_limit_pct =
-                      (desired_pv_power_kw / arf_strategy->params.pv_rated_power_kw) * 100.0;
+                      (desired_pv_power_kw / total_pv_rated_kw) * 100.0;
                   if (desired_limit_pct < min_limit) desired_limit_pct = min_limit;
                   if (desired_limit_pct > max_limit) desired_limit_pct = max_limit;
 
@@ -813,7 +836,7 @@ int main(int argc, char* argv[]) {
                     const double grid_headroom_kw =
                         grid_power_kw - recovery_ready_grid_kw;
                     double allowed_recovery_pct =
-                        (grid_headroom_kw / arf_strategy->params.pv_rated_power_kw) * 100.0;
+                        (grid_headroom_kw / total_pv_rated_kw) * 100.0;
                     if (allowed_recovery_pct < 0.0) allowed_recovery_pct = 0.0;
 
                     double recovery_step_pct =
@@ -876,6 +899,7 @@ int main(int argc, char* argv[]) {
 
         if (!bess_groups.empty()) {
           std::vector<BessBindingGroup> eligible_bess_groups;
+          std::vector<double> eligible_bess_limits_kw;
           std::string read_error;
           for (const auto& group : bess_groups) {
             if (group.setpoint_point_id.empty()) continue;
@@ -904,24 +928,40 @@ int main(int argc, char* argv[]) {
                 }
               }
             }
-            if (eligible) eligible_bess_groups.push_back(group);
+            if (eligible) {
+              eligible_bess_groups.push_back(group);
+              const auto& limit_params =
+                  arf_strategy ? arf_strategy->params : soc_strategy->params;
+              eligible_bess_limits_kw.push_back(
+                  bess_group_power_limit_kw(limit_params, group, final_target));
+            }
           }
 
           if (!eligible_bess_groups.empty()) {
-            const double per_device_target =
-                final_target / static_cast<double>(eligible_bess_groups.size());
+            double total_limit_kw = 0.0;
+            for (double limit_kw : eligible_bess_limits_kw) {
+              if (limit_kw > 0.0) total_limit_kw += limit_kw;
+            }
+            if (total_limit_kw <= 0.0) {
+              total_limit_kw = static_cast<double>(eligible_bess_groups.size());
+              std::fill(eligible_bess_limits_kw.begin(), eligible_bess_limits_kw.end(), 1.0);
+            }
             std::vector<std::string> submit_parts;
             int submit_ok_count = 0;
             applied_bess_target = 0.0;
-            for (const auto& group : eligible_bess_groups) {
+            for (size_t index = 0; index < eligible_bess_groups.size(); ++index) {
+              const auto& group = eligible_bess_groups[index];
+              const double group_limit_kw = eligible_bess_limits_kw[index];
+              const double group_target =
+                  final_target * (group_limit_kw / total_limit_kw);
               auto [group_submitted, group_message] = submit_target(
-                  rt_db, group.setpoint_point_id, per_device_target, 0.1);
+                  rt_db, group.setpoint_point_id, group_target, 0.1);
               if (group_submitted || group_message == "debounced") {
                 ++submit_ok_count;
               }
               submit_parts.push_back(group.setpoint_point_id + ":" + group_message);
               bess_target_point_ids.push_back(group.setpoint_point_id);
-              applied_bess_target += per_device_target;
+              applied_bess_target += group_target;
             }
             submitted = submit_ok_count > 0;
             submit_message = join_strings(submit_parts, ";");

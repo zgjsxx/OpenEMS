@@ -17,7 +17,9 @@ private:
   core::PointHandle* grid_power_;
   std::vector<core::PointHandle*> bess_powers_;
   std::vector<core::PointHandle*> bess_run_states_;
-  double prev_target_ = 0.0;
+  double locked_target_ = 0.0;
+  bool has_locked_target_ = false;
+  int recalc_confirm_cycles_ = 0;
 };
 
 } // namespace openems::strategy

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <unordered_map>
 #include "openems/common/types.h"
 
 namespace openems::strategy {
@@ -82,7 +83,15 @@ struct StrategyParams {
   double pv_limit_max_pct = 100.0;
   double pv_limit_recovery_step_pct = 10.0;
 
+  // Multi-device capability distribution
+  std::unordered_map<std::string, double> bess_max_charge_kw_by_group;
+  std::unordered_map<std::string, double> bess_max_discharge_kw_by_group;
+  std::unordered_map<std::string, double> pv_rated_power_kw_by_group;
+
   bool parse(const std::string& key, const std::string& value);
+  double bess_charge_power_limit_for_group(const std::string& group) const;
+  double bess_discharge_power_limit_for_group(const std::string& group) const;
+  double pv_rated_power_for_group(const std::string& group) const;
 };
 
 struct StrategyExecutionResult {

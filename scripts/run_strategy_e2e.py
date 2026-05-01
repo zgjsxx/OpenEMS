@@ -128,6 +128,10 @@ def sum_points(snapshot: Dict[str, Any], *point_ids: str) -> float:
     return sum(read_point(snapshot, point_id) for point_id in point_ids)
 
 
+def approx_equal(value: float, expected: float, tolerance: float = 0.75) -> bool:
+    return abs(value - expected) <= tolerance
+
+
 def assert_anti_reverse_flow(app_client: HttpClient, sim_client: HttpClient) -> None:
     log("Running multi-device anti-reverse-flow scenario...")
     simulator_patch(
@@ -161,10 +165,18 @@ def assert_anti_reverse_flow(app_client: HttpClient, sim_client: HttpClient) -> 
     )
 
     total_bess_target_kw = sum_points(snap, "bess-target-power", "bess2-target-power")
+    bess1_target_kw = read_point(snap, "bess-target-power")
+    bess2_target_kw = read_point(snap, "bess2-target-power")
     grid_power_kw = read_point(snap, "grid-active-power")
     arf_runtime = find_runtime(runtime, "e2e-anti-reverse-flow")
+    if not approx_equal(bess1_target_kw, -9.75) or not approx_equal(bess2_target_kw, -16.25):
+        raise RuntimeError(
+            "BESS max-power distribution mismatch: "
+            f"bess1={bess1_target_kw:.2f} kW bess2={bess2_target_kw:.2f} kW"
+        )
     log(
         f"Anti-reverse-flow OK: total-bess-target={total_bess_target_kw:.2f} kW, "
+        f"bess1={bess1_target_kw:.2f} kW, bess2={bess2_target_kw:.2f} kW, "
         f"grid-active-power={grid_power_kw:.2f} kW"
     )
     log(f"ARF runtime: suppressed={arf_runtime.get('suppressed')} reason={arf_runtime.get('suppress_reason')}")
@@ -202,12 +214,9 @@ def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
         and abs(sum_points(s, "bess-active-power", "bess2-active-power")) < 0.5
         and read_point(s, "pv-target-power-limit") < 99.5
         and read_point(s, "pv2-target-power-limit") < 99.5
+        and approx_equal(read_point(s, "pv-active-power") / 1000.0, 4.0)
+        and approx_equal(read_point(s, "pv2-active-power") / 1000.0, 6.0)
         and abs(read_point(s, "grid-active-power")) < 5.0
-        and any(
-            row.get("strategy_id") == "e2e-soc-protection"
-            and "charge suppressed" in str(row.get("suppress_reason") or "")
-            for row in r
-        )
         and any(
             row.get("strategy_id") == "e2e-anti-reverse-flow"
             and "pv-target-power-limit" in str(row.get("target_point_id") or "")
@@ -222,13 +231,21 @@ def assert_soc_clamp(app_client: HttpClient, sim_client: HttpClient) -> None:
     grid_power_kw = read_point(snap, "grid-active-power")
     pv1_limit_pct = read_point(snap, "pv-target-power-limit")
     pv2_limit_pct = read_point(snap, "pv2-target-power-limit")
+    pv1_actual_kw = read_point(snap, "pv-active-power") / 1000.0
+    pv2_actual_kw = read_point(snap, "pv2-active-power") / 1000.0
     soc_runtime = find_runtime(runtime, "e2e-soc-protection")
     arf_runtime = find_runtime(runtime, "e2e-anti-reverse-flow")
+    if not approx_equal(pv1_actual_kw, 4.0) or not approx_equal(pv2_actual_kw, 6.0):
+        raise RuntimeError(
+            "PV rated-power curtailment mismatch: "
+            f"pv1={pv1_actual_kw:.2f} kW pv2={pv2_actual_kw:.2f} kW"
+        )
     log(
         "SOC clamp + PV curtailment OK: "
         f"total-bess-target={total_bess_target_kw:.2f} kW, "
         f"total-bess-active={total_bess_actual_kw:.2f} kW, "
         f"pv1-limit={pv1_limit_pct:.2f} %, pv2-limit={pv2_limit_pct:.2f} %, "
+        f"pv1={pv1_actual_kw:.2f} kW, pv2={pv2_actual_kw:.2f} kW, "
         f"grid-active-power={grid_power_kw:.2f} kW"
     )
     log(f"SOC runtime: suppressed={soc_runtime.get('suppressed')} reason={soc_runtime.get('suppress_reason')}")

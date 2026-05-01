@@ -17,8 +17,14 @@ MODBUS_PORT = int(os.environ.get("SIM_MODBUS_PORT", "1502"))
 HTTP_PORT = int(os.environ.get("SIM_HTTP_PORT", "18080"))
 STEP_SECONDS = 0.5
 RAMP_W_PER_S = float(os.environ.get("SIM_BESS_RAMP_W_PER_S", "20000"))
-DEFAULT_BESS_CAPACITY_KWH = float(os.environ.get("SIM_BESS_CAPACITY_KWH", "100"))
-DEFAULT_PV_RATED_POWER_W = float(os.environ.get("SIM_PV_RATED_POWER_W", "100000"))
+DEFAULT_BESS1_CAPACITY_KWH = float(os.environ.get("SIM_BESS1_CAPACITY_KWH", "80"))
+DEFAULT_BESS2_CAPACITY_KWH = float(os.environ.get("SIM_BESS2_CAPACITY_KWH", "120"))
+DEFAULT_BESS1_MAX_CHARGE_POWER_W = float(os.environ.get("SIM_BESS1_MAX_CHARGE_POWER_W", "60000"))
+DEFAULT_BESS1_MAX_DISCHARGE_POWER_W = float(os.environ.get("SIM_BESS1_MAX_DISCHARGE_POWER_W", "60000"))
+DEFAULT_BESS2_MAX_CHARGE_POWER_W = float(os.environ.get("SIM_BESS2_MAX_CHARGE_POWER_W", "100000"))
+DEFAULT_BESS2_MAX_DISCHARGE_POWER_W = float(os.environ.get("SIM_BESS2_MAX_DISCHARGE_POWER_W", "100000"))
+DEFAULT_PV1_RATED_POWER_W = float(os.environ.get("SIM_PV1_RATED_POWER_W", "80000"))
+DEFAULT_PV2_RATED_POWER_W = float(os.environ.get("SIM_PV2_RATED_POWER_W", "120000"))
 
 PV1_UNIT = 1
 BESS1_UNIT = 2
@@ -27,12 +33,26 @@ PV2_UNIT = 4
 BESS2_UNIT = 5
 
 PV_DEVICES = [
-    {"key": "pv", "label": "PV #1", "unit": PV1_UNIT, "rated_power_w": DEFAULT_PV_RATED_POWER_W},
-    {"key": "pv2", "label": "PV #2", "unit": PV2_UNIT, "rated_power_w": DEFAULT_PV_RATED_POWER_W},
+    {"key": "pv", "label": "PV #1", "unit": PV1_UNIT, "rated_power_w": DEFAULT_PV1_RATED_POWER_W},
+    {"key": "pv2", "label": "PV #2", "unit": PV2_UNIT, "rated_power_w": DEFAULT_PV2_RATED_POWER_W},
 ]
 BESS_DEVICES = [
-    {"key": "bess", "label": "BESS #1", "unit": BESS1_UNIT, "capacity_kwh": DEFAULT_BESS_CAPACITY_KWH},
-    {"key": "bess2", "label": "BESS #2", "unit": BESS2_UNIT, "capacity_kwh": DEFAULT_BESS_CAPACITY_KWH},
+    {
+        "key": "bess",
+        "label": "BESS #1",
+        "unit": BESS1_UNIT,
+        "capacity_kwh": DEFAULT_BESS1_CAPACITY_KWH,
+        "max_charge_power_w": DEFAULT_BESS1_MAX_CHARGE_POWER_W,
+        "max_discharge_power_w": DEFAULT_BESS1_MAX_DISCHARGE_POWER_W,
+    },
+    {
+        "key": "bess2",
+        "label": "BESS #2",
+        "unit": BESS2_UNIT,
+        "capacity_kwh": DEFAULT_BESS2_CAPACITY_KWH,
+        "max_charge_power_w": DEFAULT_BESS2_MAX_CHARGE_POWER_W,
+        "max_discharge_power_w": DEFAULT_BESS2_MAX_DISCHARGE_POWER_W,
+    },
 ]
 
 
@@ -61,6 +81,7 @@ def _make_default_state() -> dict:
     }
     for pv in PV_DEVICES:
         key = pv["key"]
+        state[f"{key}_rated_power_w"] = pv["rated_power_w"]
         state[f"{key}_available_power_w"] = 18000
         state[f"{key}_power_w"] = 18000
         state[f"{key}_voltage_v"] = 400.0
@@ -70,6 +91,9 @@ def _make_default_state() -> dict:
         state[f"{key}_target_power_limit_pct"] = 100.0
     for bess in BESS_DEVICES:
         key = bess["key"]
+        state[f"{key}_capacity_kwh"] = bess["capacity_kwh"]
+        state[f"{key}_max_charge_power_w"] = bess["max_charge_power_w"]
+        state[f"{key}_max_discharge_power_w"] = bess["max_discharge_power_w"]
         state[f"{key}_soc_pct"] = 50.0
         state[f"{key}_active_power_w"] = 0
         state[f"{key}_target_power_w"] = 0
@@ -99,6 +123,7 @@ FIELD_GROUPS = [
     {
         "title": "PV Inverter #1",
         "fields": [
+            "pv_rated_power_w",
             "pv_available_power_w",
             "pv_power_w",
             "pv_voltage_v",
@@ -111,6 +136,7 @@ FIELD_GROUPS = [
     {
         "title": "PV Inverter #2",
         "fields": [
+            "pv2_rated_power_w",
             "pv2_available_power_w",
             "pv2_power_w",
             "pv2_voltage_v",
@@ -123,6 +149,9 @@ FIELD_GROUPS = [
     {
         "title": "BESS #1",
         "fields": [
+            "bess_capacity_kwh",
+            "bess_max_charge_power_w",
+            "bess_max_discharge_power_w",
             "bess_soc_pct",
             "bess_active_power_w",
             "bess_target_power_w",
@@ -135,6 +164,9 @@ FIELD_GROUPS = [
     {
         "title": "BESS #2",
         "fields": [
+            "bess2_capacity_kwh",
+            "bess2_max_charge_power_w",
+            "bess2_max_discharge_power_w",
             "bess2_soc_pct",
             "bess2_active_power_w",
             "bess2_target_power_w",
@@ -151,9 +183,17 @@ CSV_FIELDS = [
     "scenario_name",
     "note",
     "load_power_w",
+    "pv_rated_power_w",
     "pv_available_power_w",
+    "pv2_rated_power_w",
     "pv2_available_power_w",
+    "bess_capacity_kwh",
+    "bess_max_charge_power_w",
+    "bess_max_discharge_power_w",
     "bess_soc_pct",
+    "bess2_capacity_kwh",
+    "bess2_max_charge_power_w",
+    "bess2_max_discharge_power_w",
     "bess2_soc_pct",
     "bess_started",
     "bess2_started",
@@ -503,11 +543,11 @@ SIMULATOR_PAGE = """<!doctype html>
 FIELD_GROUPS_JSON = json.dumps(FIELD_GROUPS, ensure_ascii=False)
 SIMULATOR_PAGE = SIMULATOR_PAGE.replace("__FIELD_GROUPS__", FIELD_GROUPS_JSON)
 
-SAMPLE_CSV = """scenario_name,note,load_power_w,pv_available_power_w,pv2_available_power_w,bess_soc_pct,bess2_soc_pct,bess_started,bess2_started,bess_run_mode,bess2_run_mode,bess_grid_state,bess2_grid_state
-双储能防逆流,SOC 正常，两台储能共同吸收逆流,10000,18000,18000,50,55,true,true,1,1,0,0
-双储能高SOC转限光,SOC 都过高，改由双光伏限发,10000,18000,18000,90,92,true,true,1,1,0,0
-单储能参与,BESS #2 停机，仅 BESS #1 参与,10000,18000,18000,50,50,true,false,1,0,0,0
-单光伏停机,PV #2 停机，观察剩余设备接管,10000,18000,0,50,50,true,true,1,1,0,0
+SAMPLE_CSV = """scenario_name,note,load_power_w,pv_rated_power_w,pv_available_power_w,pv2_rated_power_w,pv2_available_power_w,bess_capacity_kwh,bess_max_charge_power_w,bess_max_discharge_power_w,bess_soc_pct,bess2_capacity_kwh,bess2_max_charge_power_w,bess2_max_discharge_power_w,bess2_soc_pct,bess_started,bess2_started,bess_run_mode,bess2_run_mode,bess_grid_state,bess2_grid_state
+双储能防逆流,SOC 正常，两台储能共同吸收逆流,10000,80000,18000,120000,18000,80,60000,60000,50,120,100000,100000,55,true,true,1,1,0,0
+双储能高SOC转限光,SOC 都过高，改由双光伏限发,10000,80000,18000,120000,18000,80,60000,60000,90,120,100000,100000,92,true,true,1,1,0,0
+单储能参与,BESS #2 停机，仅 BESS #1 参与,10000,80000,18000,120000,18000,80,60000,60000,50,120,100000,100000,50,true,false,1,0,0,0
+单光伏停机,PV #2 停机，观察剩余设备接管,10000,80000,18000,120000,0,80,60000,60000,50,120,100000,100000,50,true,true,1,1,0,0
 """
 
 
@@ -539,6 +579,7 @@ def _slave(unit: int) -> ModbusSlaveContext:
 
 def _pv_state_keys(base: str) -> dict:
     return {
+        "rated": f"{base}_rated_power_w",
         "available": f"{base}_available_power_w",
         "power": f"{base}_power_w",
         "voltage": f"{base}_voltage_v",
@@ -551,6 +592,7 @@ def _pv_state_keys(base: str) -> dict:
 
 def _bess_state_keys(base: str) -> dict:
     return {
+        "capacity": f"{base}_capacity_kwh",
         "soc": f"{base}_soc_pct",
         "power": f"{base}_active_power_w",
         "target_power": f"{base}_target_power_w",
@@ -596,13 +638,14 @@ def _sync_registers() -> None:
         for pv in PV_DEVICES:
             keys = _pv_state_keys(pv["key"])
             available = int(state[keys["available"]])
+            rated_power = max(0.0, float(state[keys["rated"]]))
             voltage = float(state[keys["voltage"]])
             running = int(state[keys["running"]])
             target_power = int(state[keys["target_power"]])
             target_limit_pct = max(0.0, min(100.0, float(state[keys["target_limit"]])))
 
             if running:
-                limit_power = pv["rated_power_w"] * target_limit_pct / 100.0
+                limit_power = rated_power * target_limit_pct / 100.0
                 actual_power = int(round(min(float(available), limit_power)))
             else:
                 actual_power = 0
@@ -695,7 +738,7 @@ def _simulation_loop(stop_event: threading.Event) -> None:
                 started = bool(state[keys["started"]])
                 run_mode = int(state[keys["run_mode"]])
                 soc = float(state[keys["soc"]])
-                capacity_wh = float(bess["capacity_kwh"]) * 1000.0
+                capacity_wh = max(1.0, float(state[keys["capacity"]])) * 1000.0
 
                 effective_target = target if started and run_mode != 0 else 0
                 max_step = RAMP_W_PER_S * STEP_SECONDS

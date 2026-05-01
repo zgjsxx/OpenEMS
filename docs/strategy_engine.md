@@ -1,12 +1,10 @@
 # OpenEMS 策略引擎说明
 
-本文档说明当前 `openems-strategy-engine` 的定位、控制顺序、数据库配置项，以及当前已经支持的自动控制能力。
+本文档说明当前 `openems-strategy-engine` 的定位、控制顺序、参数模型，以及已经支持的自动控制能力。
 
 ## 1. 模块定位
 
-`openems-strategy-engine` 是运行在 OpenEMS 主链路之上的独立策略进程。
-
-它的职责是：
+`openems-strategy-engine` 是运行在 OpenEMS 主链路之上的独立策略进程，职责是：
 
 - 从 RtDb 读取实时点位
 - 从 PostgreSQL 读取策略配置
@@ -14,140 +12,104 @@
 - 通过现有 command slot 下发遥控 / 遥调
 - 把运行状态和动作日志写回 PostgreSQL
 
-它不直接访问 Modbus/IEC104 驱动，而是复用现有实时链路和控制链路。
+它不直接访问 Modbus / IEC104 驱动，而是复用现有采集链路和控制链路。
 
 ## 2. 当前支持的自动控制能力
 
-当前 V1 已支持 3 层固定顺序的控制链：
+当前固定支持三层顺序控制：
 
-1. 防逆流控制 `AntiReverseFlow`
-2. SOC 上下限保护 `SocProtection`
-3. 光伏限功率补偿 `PV Curtailment Compensation`
+1. `AntiReverseFlow`
+2. `SocProtection`
+3. `PV Curtailment Compensation`
 
-当前设计仍然是：
+控制语义是：
 
-- 单站
-- 单储能主控
-- 单光伏补偿
+- 防逆流先算站级目标
+- SOC 保护对储能目标做裁剪
+- 如果储能因高 SOC 或不可用无法继续消纳，再由光伏限功率补偿接管
 
-也就是说，当前策略的主要可控对象仍然是储能，光伏限发是在储能无法继续消纳时接管的补偿动作。
-
-## 3. 控制顺序
-
-当前控制顺序固定，不做通用仲裁框架：
+## 3. 当前控制顺序
 
 ```text
 Step 1: AntiReverseFlow
-  先根据并网点功率计算储能目标功率
+  根据并网点功率偏差计算储能总目标功率
 
 Step 2: SocProtection
-  再根据 SOC 上下限对储能目标功率做裁剪
+  根据 SOC 上下限对储能目标进行裁剪
 
 Step 3: PV Curtailment Compensation
-  如果储能因为高 SOC 无法继续充电，且并网点仍有逆流，
-  则通过 pv-target-power-limit 对光伏做限功率补偿
+  当储能不能继续充电且并网点仍有逆流时，
+  通过 pv-target-power-limit 对光伏进行限发
 ```
 
-可以把它理解成：
+## 4. 多设备控制模型
 
-- 防逆流负责回答“理论上应该怎么调”
-- SOC 保护负责回答“储能允不允许这样调”
-- 光伏限发负责回答“储能调不动以后，谁来兜底”
+当前已经支持多设备参与同一条站级策略链路。
 
-## 4. 三层策略的行为
+### 4.1 多储能目标分配
 
-### 4.1 防逆流控制
+策略引擎会先算出一个站级储能总目标功率，再分配到所有可参与的 BESS。
 
-目标：
+当前分配规则：
 
-- 尽量让 `grid-active-power` 不低于 `export_limit_kw`
-- 默认 `export_limit_kw = 0`
-- 即默认不允许向电网反送电
+- 先过滤不可参与设备：
+  - 停机
+  - 运行状态异常
+  - 被 SOC 上下限约束卡住
+- 剩余可用 BESS 再按最大功率能力分配
 
-当前实现是基于储能当前功率点的闭环调节：
+分配原则：
 
-- 检测并网点功率偏差
-- 算出新的储能目标功率
-- 再经过功率限幅、死区和爬坡率限制
+- 当总目标为负值时，表示充电
+  - 按 `bess_max_charge_kw#设备组` 分配
+- 当总目标为正值时，表示放电
+  - 按 `bess_max_discharge_kw#设备组` 分配
+- 如果没有配置分设备能力参数，则回退到全局：
+  - `max_charge_kw`
+  - `max_discharge_kw`
 
-主要参数：
+示例：
 
-- `export_limit_kw`
-- `max_charge_kw`
-- `max_discharge_kw`
-- `deadband_kw`
-- `ramp_rate_kw_per_s`
+- `bess_max_charge_kw#bess-001 = 60`
+- `bess_max_charge_kw#bess-002 = 100`
+- 站级充电目标 `-26kW`
 
-### 4.2 SOC 保护
+则：
 
-目标：
+- `bess-001 = -26 × 60 / (60 + 100) = -9.75kW`
+- `bess-002 = -26 × 100 / (60 + 100) = -16.25kW`
 
-- `SOC <= soc_low` 时禁止继续放电
-- `SOC >= soc_high` 时禁止继续充电
+### 4.2 多光伏限功率
 
-当前 V1 中，SOC 保护不单独争抢控制权，而是作为上层裁剪器处理防逆流算出的储能目标。
+多光伏场景下，策略引擎按光伏额定功率比例进行限发。
 
-典型效果：
+当前实现方式：
 
-- 如果防逆流希望储能充电，但 `SOC >= soc_high`
-- 则储能目标被直接裁成 `0`
-- 并记录抑制原因，例如：
-  - `SOC(90%) >= high limit(80%), charge suppressed`
+- 每台 PV 单独配置额定功率
+- 策略先计算站级需要保留的总光伏功率
+- 再折算出统一的限发百分比
+- 对所有参与 PV 下发同一个 `pv-target-power-limit`
 
-主要参数：
+这在数学上等价于：
 
-- `soc_low`
-- `soc_high`
+- 每台 PV 按各自额定功率比例承担限发量
 
-### 4.3 光伏限功率补偿
+示例：
 
-目标：
+- `pv_rated_power_kw#pv-001 = 80`
+- `pv_rated_power_kw#pv-002 = 120`
+- 统一限发到 `5%`
 
-- 当并网点仍有逆流
-- 且储能因为高 SOC 或不可用而无法继续接管
-- 则自动通过 `pv-target-power-limit` 限制光伏出力
+则：
 
-当前 V1 固定使用：
+- `pv-001` 实际出力约 `4kW`
+- `pv-002` 实际出力约 `6kW`
 
-- `pv-target-power-limit`
+## 5. 绑定角色
 
-不使用：
+策略绑定保存在 `strategy_bindings` 表里。
 
-- `pv-target-power`
-
-触发条件：
-
-- `enable_pv_curtailment = true`
-- `grid-active-power < export_limit_kw`
-- 储能目标因高 SOC 被裁成 `0`
-  或者储能当前不可用
-- PV 运行状态有效
-- 已配置 PV 功率点和 PV 限发设定点
-
-计算逻辑：
-
-1. 先计算当前超出的逆流量
-2. 再从当前 PV 出力中扣掉这部分需要削减的功率
-3. 用 `pv_rated_power_kw` 把目标有功功率换算成限发百分比
-4. 再钳制到 `pv_limit_min_pct ~ pv_limit_max_pct`
-
-恢复逻辑：
-
-- 当逆流消失，且储能/SOC 约束解除后
-- `pv-target-power-limit` 不会瞬间回到 `100%`
-- 而是按 `pv_limit_recovery_step_pct` 逐步恢复
-
-主要参数：
-
-- `enable_pv_curtailment`
-- `pv_rated_power_kw`
-- `pv_limit_min_pct`
-- `pv_limit_max_pct`
-- `pv_limit_recovery_step_pct`
-
-## 5. 当前推荐绑定角色
-
-策略绑定继续保存在 `strategy_bindings` 表里，当前常用角色包括：
+当前常用角色包括：
 
 - `grid_power`
 - `bess_power`
@@ -167,48 +129,52 @@ Step 3: PV Curtailment Compensation
 - `pv_power#pv-001`
 - `pv_power_limit_setpoint#pv-002`
 
-策略引擎会把同一基础角色下的多个设备聚合为站级控制对象：
+## 6. 参数模型
 
-- BESS 总目标先按站级计算，再按可运行、SOC 合法的设备平均分配
-- PV 限发按统一百分比下发到所有参与该策略的 PV 设备
+策略参数保存在 `strategy_params` 表里。
 
-其中当前三层链路最重要的绑定一般是：
+### 6.1 通用参数
 
-- `grid_power -> grid-active-power`
-- `bess_power -> bess-active-power`
-- `bess_soc -> bess-soc`
-- `bess_run_state -> bess-run-mode`
-- `bess_power_setpoint -> bess-target-power`
-- `pv_power -> pv-active-power`
-- `pv_power_limit_setpoint -> pv-target-power-limit`
-- `pv_run_state -> pv-running-status`
+- `export_limit_kw`
+- `max_charge_kw`
+- `max_discharge_kw`
+- `deadband_kw`
+- `ramp_rate_kw_per_s`
+- `soc_low`
+- `soc_high`
+- `manual_override_minutes`
 
-## 6. 数据库存储
+### 6.2 光伏限发参数
 
-当前策略引擎主要使用以下 PostgreSQL 表：
+- `enable_pv_curtailment`
+- `pv_rated_power_kw`
+- `pv_limit_min_pct`
+- `pv_limit_max_pct`
+- `pv_limit_recovery_step_pct`
 
-- `strategy_definitions`
-- `strategy_bindings`
-- `strategy_params`
-- `strategy_runtime_state`
-- `strategy_action_logs`
+### 6.3 多设备能力参数
 
-用途分别是：
+储能：
 
-- `strategy_definitions`
-  - 策略主表
-- `strategy_bindings`
-  - 输入点/输出点绑定
-- `strategy_params`
-  - 策略参数
-- `strategy_runtime_state`
-  - 当前运行状态、当前目标值、人工接管截止时间
-- `strategy_action_logs`
-  - 每次动作、抑制和恢复的明细日志
+- `bess_max_charge_kw#bess-001`
+- `bess_max_charge_kw#bess-002`
+- `bess_max_discharge_kw#bess-001`
+- `bess_max_discharge_kw#bess-002`
+
+光伏：
+
+- `pv_rated_power_kw#pv-001`
+- `pv_rated_power_kw#pv-002`
+
+说明：
+
+- `pv_rated_power_kw` 可作为全局回退值
+- 如配置了 `pv_rated_power_kw#组标识`，优先使用分设备额定功率
+- 储能的“容量 kWh”不再参与目标功率分配，只用于仿真器里的 SOC 演化
 
 ## 7. 人工接管规则
 
-当前系统保留“人工优先”规则。
+系统保留“人工优先”规则。
 
 当用户通过 Web 手动下发以下点位时：
 
@@ -220,59 +186,70 @@ Step 3: PV Curtailment Compensation
 
 当前默认规则：
 
-- 接管时长：30 分钟
-- 接管期间：策略不再自动覆盖人工命令
+- 接管时长：`30` 分钟
+- 接管期间：策略不自动覆盖人工命令
 - 到期后：策略自动恢复接管
 
-## 8. 当前验证通过的典型场景
+## 8. 当前已验证的典型场景
 
-### 场景一：防逆流，SOC 正常
-
-条件：
-
-- `SOC = 50%`
-- `PV = 36kW`
-- `Load = 10kW`
-
-预期：
-
-- 储能进入充电
-- `bess-target-power` 约为 `-26kW`
-- `grid-active-power` 收敛到 `0kW` 附近
-
-### 场景二：高 SOC，储能禁止继续充电，PV 接管限发
+### 场景一：双储能防逆流
 
 条件：
 
-- `SOC = 90%`
-- `PV = 36kW`
-- `Load = 10kW`
+- `pv-001 = 18kW`
+- `pv-002 = 18kW`
+- `load = 10kW`
+- `bess-001 SOC = 50%`
+- `bess-002 SOC = 55%`
+- 储能最大可充功率：
+  - `bess-001 = 60kW`
+  - `bess-002 = 100kW`
 
 预期：
 
-- `bess-target-power = 0`
-- `bess-active-power = 0`
-- `pv-target-power-limit < 100`
-- `grid-active-power` 收敛到 `0kW` 附近
+- 总储能目标约 `-26kW`
+- `bess-001` 约承担 `-9.75kW`
+- `bess-002` 约承担 `-16.25kW`
+- `grid-active-power` 回到 `0kW` 附近
+
+### 场景二：高 SOC 时双光伏限发
+
+条件：
+
+- `pv-001 = 18kW`
+- `pv-002 = 18kW`
+- `load = 10kW`
+- `bess-001 SOC = 90%`
+- `bess-002 SOC = 92%`
+- 光伏额定功率：
+  - `pv-001 = 80kW`
+  - `pv-002 = 120kW`
+
+预期：
+
+- 两台储能目标都被压为 `0`
+- `pv-target-power-limit` 与 `pv2-target-power-limit` 同时生效
+- `pv-001` 实际出力约 `4kW`
+- `pv-002` 实际出力约 `6kW`
+- `grid-active-power` 回到 `0kW` 附近
 
 ## 9. 当前边界
 
-当前暂不支持：
+当前仍未覆盖：
 
-- 多储能协同
-- 多光伏协同
+- 多站点协同
+- 不同设备健康度参与分配
 - 需量控制
 - 分时电价策略
-- 光伏目标功率控制 `pv-target-power`
 - 通用表达式引擎
 - 脚本化策略
 
 ## 10. 后续建议
 
-在当前三层链路之上，后续建议优先扩展：
+建议后续继续扩展：
 
 1. 低 SOC 禁止放电的 E2E 场景
 2. 手动接管 30 分钟 E2E 场景
-3. BESS 停机时仅靠 PV 限发兜底
-4. 光伏限发恢复的平滑释放策略
-5. 多设备协同仲裁
+3. 一台 BESS 停机后另一台自动承担更多目标
+4. 光伏限发恢复过程的长期稳定性验证
+5. 基于健康度 / 故障 / 优先级的动态能力分配

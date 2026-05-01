@@ -7,6 +7,10 @@
 
 namespace openems::strategy {
 
+namespace {
+constexpr int kRecalcConfirmCycles = 2;
+}
+
 AntiReverseFlow::AntiReverseFlow(StrategyDefinition def, StrategyParams params,
                                  rt_db::RtDb* rtdb)
     : StrategyBase(std::move(def), params, rtdb)
@@ -33,7 +37,8 @@ StrategyExecutionResult AntiReverseFlow::execute() {
   if (!cmd_handle_) {
     result.suppressed = true;
     result.suppress_reason = "bess_power_setpoint binding not configured";
-    prev_target_ = result.target_power_kw;
+    locked_target_ = result.target_power_kw;
+    has_locked_target_ = true;
     return result;
   }
 
@@ -51,7 +56,8 @@ StrategyExecutionResult AntiReverseFlow::execute() {
         "command submit failed: " + submit_result.error_msg();
   }
 
-  prev_target_ = result.target_power_kw;
+  locked_target_ = result.target_power_kw;
+  has_locked_target_ = true;
   return result;
 }
 
@@ -73,7 +79,7 @@ StrategyExecutionResult AntiReverseFlow::calculate_target() {
   }
 
   double p_grid = grid_result.value();
-  double p_bess = prev_target_;
+  double p_bess = has_locked_target_ ? locked_target_ : 0.0;
 
   if (!bess_powers_.empty()) {
     double total_bess_power = 0.0;
@@ -111,38 +117,48 @@ StrategyExecutionResult AntiReverseFlow::calculate_target() {
   const double max_charge = params_.max_charge_kw;
   const double max_discharge = params_.max_discharge_kw;
   const double deadband = params_.deadband_kw;
-  const double ramp_rate = params_.ramp_rate_kw_per_s;
-  const double dt = static_cast<double>(def_.cycle_ms) / 1000.0;
 
   const double grid_error = p_grid - export_limit;
-  double raw_target = 0.0;
+  const double track_tolerance = std::max(deadband, 0.2);
 
-  // Close the loop around the current BESS operating point. With the current
-  // sign convention, charging power is negative, so reverse flow naturally
-  // pushes the target further negative instead of bouncing back to zero.
-  if (std::abs(grid_error) < deadband) {
-    raw_target = p_bess;
-  } else {
-    raw_target = p_bess + grid_error;
+  bool should_recalculate = !has_locked_target_;
+  if (!should_recalculate) {
+    const bool tracking_in_progress =
+        std::abs(p_bess - locked_target_) > track_tolerance;
+    if (tracking_in_progress) {
+      recalc_confirm_cycles_ = 0;
+    } else if (std::abs(grid_error) > deadband) {
+      recalc_confirm_cycles_ += 1;
+      if (recalc_confirm_cycles_ >= kRecalcConfirmCycles) {
+        should_recalculate = true;
+      }
+    } else {
+      recalc_confirm_cycles_ = 0;
+    }
   }
 
-  raw_target = std::max(raw_target, -max_charge);
-  raw_target = std::min(raw_target, max_discharge);
-
-  const double max_step = ramp_rate * dt;
-  double target = std::max(prev_target_ - max_step,
-                           std::min(prev_target_ + max_step, raw_target));
-
-  if (std::abs(target) < deadband) {
-    target = 0.0;
+  if (should_recalculate) {
+    double raw_target = p_bess;
+    if (std::abs(grid_error) >= deadband) {
+      raw_target += grid_error;
+    }
+    raw_target = std::max(raw_target, -max_charge);
+    raw_target = std::min(raw_target, max_discharge);
+    if (std::abs(raw_target) < deadband) {
+      raw_target = 0.0;
+    }
+    locked_target_ = raw_target;
+    has_locked_target_ = true;
+    recalc_confirm_cycles_ = 0;
   }
 
-  result.target_power_kw = target;
+  result.target_power_kw = locked_target_;
   return result;
 }
 
 void AntiReverseFlow::mark_target_applied(double target_kw) {
-  prev_target_ = target_kw;
+  locked_target_ = target_kw;
+  has_locked_target_ = true;
 }
 
 } // namespace openems::strategy

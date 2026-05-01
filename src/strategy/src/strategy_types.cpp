@@ -13,6 +13,19 @@ bool StrategyParams::parse(const std::string& key, const std::string& value) {
     return text == "1" || text == "true" || text == "yes" || text == "on";
   };
   double v = std::atof(value.c_str());
+  auto parse_group_key = [](const std::string& text, const std::string& prefix,
+                            std::string& group_out) {
+    if (text.rfind(prefix, 0) != 0) {
+      return false;
+    }
+    if (text.size() <= prefix.size()) {
+      return false;
+    }
+    group_out = text.substr(prefix.size());
+    return !group_out.empty();
+  };
+
+  std::string group;
   if (key == "export_limit_kw")          { export_limit_kw = v; return true; }
   if (key == "max_charge_kw")            { max_charge_kw = v; return true; }
   if (key == "max_discharge_kw")         { max_discharge_kw = v; return true; }
@@ -26,7 +39,43 @@ bool StrategyParams::parse(const std::string& key, const std::string& value) {
   if (key == "pv_limit_min_pct")         { pv_limit_min_pct = v; return true; }
   if (key == "pv_limit_max_pct")         { pv_limit_max_pct = v; return true; }
   if (key == "pv_limit_recovery_step_pct") { pv_limit_recovery_step_pct = v; return true; }
+  if (parse_group_key(key, "bess_max_charge_kw#", group)) {
+    bess_max_charge_kw_by_group[group] = v;
+    return true;
+  }
+  if (parse_group_key(key, "bess_max_discharge_kw#", group)) {
+    bess_max_discharge_kw_by_group[group] = v;
+    return true;
+  }
+  if (parse_group_key(key, "pv_rated_power_kw#", group)) {
+    pv_rated_power_kw_by_group[group] = v;
+    return true;
+  }
   return false;
+}
+
+double StrategyParams::bess_charge_power_limit_for_group(const std::string& group) const {
+  const auto it = bess_max_charge_kw_by_group.find(group);
+  if (it != bess_max_charge_kw_by_group.end() && it->second > 0.0) {
+    return it->second;
+  }
+  return max_charge_kw;
+}
+
+double StrategyParams::bess_discharge_power_limit_for_group(const std::string& group) const {
+  const auto it = bess_max_discharge_kw_by_group.find(group);
+  if (it != bess_max_discharge_kw_by_group.end() && it->second > 0.0) {
+    return it->second;
+  }
+  return max_discharge_kw;
+}
+
+double StrategyParams::pv_rated_power_for_group(const std::string& group) const {
+  const auto it = pv_rated_power_kw_by_group.find(group);
+  if (it != pv_rated_power_kw_by_group.end() && it->second > 0.0) {
+    return it->second;
+  }
+  return pv_rated_power_kw;
 }
 
 } // namespace openems::strategy
