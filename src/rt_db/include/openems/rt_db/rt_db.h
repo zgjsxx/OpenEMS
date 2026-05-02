@@ -106,7 +106,9 @@ struct AlarmActiveRecord {
 
 class RtDb {
 public:
-  // Create shared memory region (RtDb service process)
+  // 由 RtDb service 进程调用，创建整个共享内存表空间。
+  // 该接口会一次性创建 catalog、point_index、telemetry、
+  // teleindication、command 以及运行态镜像表，并初始化表头。
   static common::Result<RtDb*> create(const std::string& shm_name,
                                        uint32_t telemetry_count,
                                        uint32_t teleindication_count,
@@ -114,7 +116,7 @@ public:
                                        uint32_t strategy_runtime_count = 64,
                                        uint32_t alarm_active_count = 256);
 
-  // Attach to existing shared memory (other processes)
+  // 由其他进程调用，attach 已存在的共享内存表空间。
   static common::Result<RtDb*> attach(const std::string& shm_name);
 
   ~RtDb();

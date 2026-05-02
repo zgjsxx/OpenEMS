@@ -295,6 +295,8 @@ common::Result<RtDb*> RtDb::create(
     uint32_t alarm_active_count) {
   auto* db = new RtDb(shm_name, true);
 
+  // 为每一张共享内存表生成独立的 shm 名称。
+  // catalog 是目录表，其余表通过 catalog 暴露给调用方发现和打开。
   db->catalog_segment_.shm_name = table_shm_name(shm_name, kCatalogTableName);
   db->point_index_segment_.shm_name = table_shm_name(shm_name, kPointIndexTableName);
   db->telemetry_segment_.shm_name = table_shm_name(shm_name, kTelemetryTableName);
@@ -303,6 +305,8 @@ common::Result<RtDb*> RtDb::create(
   db->strategy_runtime_segment_.shm_name = table_shm_name(shm_name, kStrategyRuntimeTableName);
   db->alarm_active_segment_.shm_name = table_shm_name(shm_name, kAlarmActiveTableName);
 
+  // point_index 的容量按实时点总数分配；
+  // 其余表分别按各自的业务容量独立分配，避免单块大内存耦合。
   const uint32_t total_point_count = telemetry_count + teleindication_count;
   const size_t catalog_size = sizeof(TableHeader) + 7 * sizeof(CatalogEntry);
   const size_t point_index_size =
@@ -318,6 +322,8 @@ common::Result<RtDb*> RtDb::create(
   const size_t alarm_active_size =
       sizeof(TableHeader) + static_cast<size_t>(alarm_active_count) * sizeof(AlarmActiveSlot);
 
+  // 创建单张共享内存表段，并将其映射到当前进程地址空间。
+  // 成功后保存句柄、映射地址和大小；同时将整块内存清零，避免脏数据。
   auto create_segment = [&](RtDb::Segment& segment, size_t size) -> bool {
     void* handle = nullptr;
     void* addr = shm_create_region(segment.shm_name, size, &handle);
@@ -331,6 +337,8 @@ common::Result<RtDb*> RtDb::create(
     return true;
   };
 
+  // 依次创建整个 RtDb 表空间中的所有共享内存表。
+  // 任意一张表创建失败，都视为整个 RtDb 创建失败，避免出现“只创建了一半”的不一致状态。
   if (!create_segment(db->catalog_segment_, catalog_size) ||
       !create_segment(db->point_index_segment_, point_index_size) ||
       !create_segment(db->telemetry_segment_, telemetry_size) ||
@@ -344,6 +352,8 @@ common::Result<RtDb*> RtDb::create(
         "Failed to create RtDb table segments");
   }
 
+  // 初始化 catalog 表头和目录项。catalog 本身就是整套表空间的入口，
+  // 其他进程 attach 后会先读这张表，再按目录项打开具体业务表。
   db->catalog_header_ = reinterpret_cast<TableHeader*>(db->catalog_segment_.mapped_addr);
   db->catalog_entries_ = reinterpret_cast<CatalogEntry*>(
       db->catalog_segment_.mapped_addr + sizeof(TableHeader));
@@ -356,6 +366,8 @@ common::Result<RtDb*> RtDb::create(
       7);
   db->catalog_header_->row_count = 7;
 
+  // 初始化 point_index。它负责保存点号与各业务表 slot 的映射关系，
+  // 是“逻辑点位”到“具体表行”之间的桥梁。
   db->point_index_header_ = reinterpret_cast<PointIndexHeader*>(db->point_index_segment_.mapped_addr);
   init_table_header(
       &db->point_index_header_->base,
@@ -381,6 +393,7 @@ common::Result<RtDb*> RtDb::create(
   db->telemetry_slots_ = reinterpret_cast<TelemetrySlot*>(
       db->telemetry_segment_.mapped_addr + sizeof(TableHeader));
 
+  // 初始化遥信、命令以及运行态镜像表。
   db->teleindication_header_ =
       reinterpret_cast<TableHeader*>(db->teleindication_segment_.mapped_addr);
   init_table_header(
@@ -428,6 +441,7 @@ common::Result<RtDb*> RtDb::create(
   db->alarm_active_slots_ = reinterpret_cast<AlarmActiveSlot*>(
       db->alarm_active_segment_.mapped_addr + sizeof(TableHeader));
 
+  // 将各张业务表登记到 catalog，后续 get_table_info/open_table 都基于这里做发现。
   populate_catalog_entry(
       &db->catalog_entries_[0],
       TableCatalog,
