@@ -1149,9 +1149,13 @@ std::vector<TableInfo> RtDb::list_tables() const {
 }
 
 common::Result<TableInfo> RtDb::get_table_info(const std::string& table_name) const {
+  // catalog 是整个共享内存表空间的目录入口；如果它都没有 attach，
+  // 后续就无法按表名发现和定位其他业务表。
   if (!catalog_header_ || !catalog_entries_) {
     return common::Result<TableInfo>::Err(common::ErrorCode::InvalidConfig, "Catalog not attached");
   }
+
+  // 在 catalog 表中按逻辑表名查找对应的目录项。
   const CatalogEntry* entry =
       find_catalog_entry(catalog_entries_, catalog_header_->row_count, table_name);
   if (!entry) {
@@ -1159,6 +1163,7 @@ common::Result<TableInfo> RtDb::get_table_info(const std::string& table_name) co
         common::ErrorCode::PointNotFound, "Table not found: " + table_name);
   }
 
+  // 将共享内存中的固定长度目录项，转换成上层更易用的 TableInfo。
   TableInfo info;
   info.table_id = entry->table_id;
   info.table_name = trim_fixed_string(entry->table_name, sizeof(entry->table_name));
@@ -1171,16 +1176,19 @@ common::Result<TableInfo> RtDb::get_table_info(const std::string& table_name) co
 }
 
 common::Result<TableInfo> RtDb::get_table_info(uint16_t table_id) const {
+  // 先确保 catalog 已经可用；按表号查询本质上也是一次目录表查询。
   if (!catalog_header_ || !catalog_entries_) {
     return common::Result<TableInfo>::Err(common::ErrorCode::InvalidConfig, "Catalog not attached");
   }
 
+  // 在 catalog 中按 table_id 查找目标表的元信息。
   CatalogEntry* entry = find_catalog_entry(catalog_entries_, catalog_header_->row_count, table_id);
   if (!entry) {
     return common::Result<TableInfo>::Err(
         common::ErrorCode::PointNotFound, "Table id not found: " + std::to_string(table_id));
   }
 
+  // 这里只返回表描述信息，不会读取表内业务行数据。
   TableInfo info;
   info.table_id = entry->table_id;
   info.table_name = trim_fixed_string(entry->table_name, sizeof(entry->table_name));

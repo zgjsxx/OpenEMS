@@ -194,7 +194,13 @@ public:
   uint64_t update_sequence() const;
   bool is_creator() const { return is_creator_; }
   std::vector<TableInfo> list_tables() const;
+  // 按逻辑表名从 catalog 目录表中查询共享内存表的元信息。
+  // 这里只返回表描述信息，例如 shm_name、row_size、capacity、
+  // row_count 和 flags，不会读取表内业务行数据。
   common::Result<TableInfo> get_table_info(const std::string& table_name) const;
+  // 按表号从 catalog 目录表中查询共享内存表的元信息。
+  // 这是共享内存表空间中的“元数据查询”接口，常用于 open_table(table_id)
+  // 前的表发现、诊断和调试。
   common::Result<TableInfo> get_table_info(uint16_t table_id) const;
   common::Result<TableView> open_table(const std::string& table_name);
   common::Result<TableView> open_table(uint16_t table_id);
